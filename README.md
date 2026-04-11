@@ -86,7 +86,9 @@ main
 
 ### Meta issue format
 
-The meta issue body must contain a YAML block with the wave structure and a checkbox list for progress tracking:
+The meta issue body can use **one of two formats**:
+
+**1. YAML (preferred — explicit):**
 
 ````markdown
 ## Plan
@@ -97,7 +99,7 @@ waves:
     tasks: [1]
   - name: Contracts
     tasks: [2]
-  - name: Core + Adapters
+  - name: Core
     tasks: [3, 5, 6, 7]
 ```
 
@@ -106,12 +108,30 @@ waves:
 - [ ] #1 Project Bootstrap `P0`
 - [ ] #2 Data Model `P0`
 - [ ] #3 Router `P0`
-- [ ] #5 Token Management `P0`
-- [ ] #6 Storage Adapter `P0`
-- [ ] #7 Slack Adapter `P0`
+...
 ````
 
-The orchestrator parses the YAML with `yq` (pre-installed on GitHub runners) and updates the checkboxes as PRs merge. Any other markdown in the issue body is preserved.
+**2. Markdown (fallback — natural headings):**
+
+```markdown
+## Wave 1 — Foundation
+- [ ] #1 Project Bootstrap `P0`
+
+## Wave 2: Contracts
+- [ ] #2 Data Model `P0`
+
+### Wave 3 (Core)
+- [ ] #3 Router `P0`
+- [ ] #5 Token Management `P0`
+```
+
+The orchestrator tries YAML first (parsed with `yq`, pre-installed on runners). If no valid YAML plan block is found, it falls back to markdown parsing (awk-based, lenient). Markdown parsing rules:
+
+- **Wave header:** line starts with `#`, `*`, or the word "Wave"; contains "Wave <N>"; is not a checkbox
+- **Task:** checkbox line `- [ ] #N` or `* [ ] #N` (or `[x]` for done), assigned to the most recent wave
+- **Wave name:** whatever text follows "Wave <N>", after stripping separators (`:`, `—`, `-`, `(`, etc.)
+
+State (which tasks are done) is always derived from merged PRs — the checkboxes are updated by the orchestrator.
 
 ---
 
