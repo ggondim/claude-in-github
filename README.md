@@ -12,13 +12,21 @@ Three composable GitHub Actions workflows plus tooling:
 
 | File | Purpose |
 |---|---|
-| `.github/workflows/claude-meta.yml` | **Orchestrator** — reads a meta issue, tracks progress, assigns next wave |
+| `.github/workflows/claude-meta.yml` | **Orchestrator** — deterministic bash script that tracks progress and dispatches tasks |
 | `.github/workflows/claude-task.yml` | **Worker** — implements a single task, creates and auto-merges its PR |
 | `.github/workflows/claude-fix.yml` | **Recovery** — `@claude fix` picks up failed tasks, resolves conflicts |
+| `.github/scripts/meta-orchestrate.sh` | Bash script that powers the meta orchestrator (zero LLM) |
 | `.github/ISSUE_TEMPLATE/meta-issue.yml` | Structured form for creating meta issues |
 | `.github/ISSUE_TEMPLATE/task-issue.yml` | Structured form for creating task issues |
 | `scripts/setup.sh` | Validates prerequisites and creates labels |
 | `scripts/smoke-test.sh` | End-to-end validator — creates 3 trivial tasks and runs the loop |
+
+## Architectural highlights
+
+- **Meta orchestrator is 100% deterministic** — it's a bash script, not an LLM. Parses a YAML plan block from the meta issue, checks merged PRs, updates checkboxes, dispatches the next wave. Runs in seconds, costs $0.
+- **Only task workers use Claude** — they're the ones writing code.
+- **Loop closure via `workflow_dispatch`** — the only way to cascade workflow runs from `GITHUB_TOKEN`-authenticated steps, since PR merges and bot comments by `GITHUB_TOKEN` don't trigger workflows.
+- **Branch per meta issue** — `meta/<N>` acts as an integration branch for the plan. Task PRs target it. When all tasks are done, a final PR merges `meta/<N>` → `main`.
 
 ---
 
@@ -30,30 +38,31 @@ on meta issue (kickstart)
         │
         ▼
    ┌──────────────────────────────────────────┐
-   │         claude-meta.yml                   │
-   │  1. Determine meta issue (#N)             │
-   │  2. Ensure branch meta/<N> exists         │
-   │  3. Check merged PRs → mark done          │
-   │  4. Find next ready issues                │
-   │  5. Comment @claude on them               │
-   └──────────────┬───────────────────────────┘
-                  │ comments @claude on task issue
-                  ▼
-   ┌──────────────────────────────────────────┐
-   │         claude-task.yml                   │
-   │  1. Extract base branch from comment      │
-   │  2. Checkout meta/<N> (not main)          │
-   │  3. Implement the issue                   │
-   │  4. Auto-create PR → auto-merge           │
-   │  5. gh workflow run claude-meta.yml ←──── │─── loop closure
-   └──────────────┬───────────────────────────┘
-                  │ workflow_dispatch with meta_issue input
+   │         claude-meta.yml (bash)            │
+   │  1. Parse YAML plan from issue body       │
+   │  2. Ensure meta/<N> branch exists         │
+   │  3. Scan merged PRs → update checkboxes   │
+   │  4. Find next ready wave                  │
+   │  5. gh workflow run claude-task.yml ───── │──┐
+   └──────────────┬───────────────────────────┘  │
+                  │                              │
+                  ▼                              │
+   ┌──────────────────────────────────────────┐  │
+   │         claude-task.yml (Claude)          │◄─┘
+   │  1. Read issue body (gh issue view)       │
+   │  2. Implement tasks                       │
+   │  3. Commit + push branch                  │
+   │  4. Post-step: auto-create + merge PR     │
+   │  5. gh workflow run claude-meta.yml ───── │──┐
+   └──────────────────────────────────────────┘  │
+                                                 │
+                  ┌──────────────────────────────┘
                   ▼
               loops back to claude-meta.yml
                   │
-          (when all tasks done)
+          (when all waves done)
                   ▼
-   meta agent opens final PR: meta/<N> → main
+   meta script opens final PR: meta/<N> → main
 ```
 
 ### Branch model
@@ -74,6 +83,35 @@ main
 - Task PRs target the meta branch (not `main`)
 - When all tasks are done, a final PR merges `meta/<N>` → `main`
 - Multiple meta issues (multiple implementation plans) can run in parallel
+
+### Meta issue format
+
+The meta issue body must contain a YAML block with the wave structure and a checkbox list for progress tracking:
+
+````markdown
+## Plan
+
+```yaml
+waves:
+  - name: Foundation
+    tasks: [1]
+  - name: Contracts
+    tasks: [2]
+  - name: Core + Adapters
+    tasks: [3, 5, 6, 7]
+```
+
+## Progress
+
+- [ ] #1 Project Bootstrap `P0`
+- [ ] #2 Data Model `P0`
+- [ ] #3 Router `P0`
+- [ ] #5 Token Management `P0`
+- [ ] #6 Storage Adapter `P0`
+- [ ] #7 Slack Adapter `P0`
+````
+
+The orchestrator parses the YAML with `yq` (pre-installed on GitHub runners) and updates the checkboxes as PRs merge. Any other markdown in the issue body is preserved.
 
 ---
 
@@ -97,8 +135,6 @@ The script will:
 - Report anything that needs manual setup
 
 ### 3. Manual prerequisites (one-time per repo)
-
-Some things the script can't automate for you:
 
 #### a) Install the Claude Code GitHub App
 
@@ -131,7 +167,7 @@ If your org blocks this, enable it at `https://github.com/organizations/<ORG>/se
 ./scripts/smoke-test.sh --cleanup
 ```
 
-This creates 3 trivial tasks (create a file, append to it, create another file) in 2 waves, kickstarts the loop, and waits for the final PR. The `--cleanup` flag removes all artifacts after success.
+This creates 3 trivial tasks in 2 waves, kickstarts the loop, waits for the final PR, then cleans up all artifacts.
 
 If the smoke test passes, your setup is ready for real work.
 
@@ -143,23 +179,15 @@ If the smoke test passes, your setup is ready for real work.
 
 1. **Create task issues** using the "Task Issue" template. One issue per unit of work. Include acceptance criteria and explicit dependencies.
 
-2. **Create a meta issue** using the "Meta Issue" template. Reference the task issues by number in the waves section.
+2. **Create a meta issue** using the "Meta Issue" template. Reference the task issues by number in the YAML plan block.
 
 3. **Kickstart** by commenting on the meta issue:
    ```
    @claude
    ```
+   Or assign the meta issue to someone (triggers the same workflow).
 
-4. The orchestrator takes over:
-   - Creates the `meta/<N>` branch
-   - Assigns Wave 1 issues (comments `@claude` on each)
-   - Posts a summary
-
-5. The loop runs autonomously:
-   - Task workers implement → create PRs → merge → trigger meta
-   - Meta advances through waves
-   - Repeats until everything is done
-   - Final PR: `meta/<N>` → `main` opens automatically
+4. The orchestrator takes over — creates the branch, dispatches the first wave, tracks progress, advances waves, and opens the final PR automatically.
 
 ### Handling failures
 
@@ -171,50 +199,49 @@ When a task worker fails:
    @claude fix
    ```
 3. The fix agent picks up the existing partial branch, reads the error context from previous comments, and attempts to complete the task.
-4. If the fix agent also fails, it posts `❌ Manual intervention needed` on the meta issue.
 
 ### Retrying the orchestrator
 
-If the meta orchestrator itself fails (rare, usually transient), just comment:
-```
-@claude
-```
-on the meta issue. The orchestrator is idempotent — it reads current state and picks up where it left off.
+If the meta orchestrator itself fails (rare), just comment `@claude` on the meta issue. The script is idempotent — it reads current state from GitHub and picks up where it left off.
 
-### Multiple implementation plans
+### Manually dispatching the orchestrator
 
-Multiple meta issues can coexist in the same repo. Each gets its own `meta/<N>` branch and operates independently. Tasks are scoped to their meta issue via the `Base branch` instruction in the orchestrator's comment.
+You can also trigger the meta workflow directly (no comment needed):
+
+```bash
+gh workflow run claude-meta.yml -f meta_issue=17
+```
 
 ---
 
 ## Workflow details
 
-### `claude-meta.yml` — Orchestrator
+### `claude-meta.yml` — Orchestrator (deterministic)
 
 | | |
 |---|---|
-| **Triggers** | PR merge into `meta/*` (human), `@claude` comment on `meta`-labeled issue, `workflow_dispatch` from task worker post-step |
-| **Mode** | Automation (fixed `prompt`) |
-| **Model** | `claude-sonnet-4-6` |
-| **Timeout** | 60 minutes |
-| **Key permissions** | `contents: write`, `pull-requests: write`, `issues: write` |
+| **Triggers** | `@claude` comment on meta issue, assign on meta issue, PR merge into `meta/*` (human merges), `workflow_dispatch` (from task worker post-step) |
+| **Implementation** | Pure bash script in `.github/scripts/meta-orchestrate.sh` |
+| **LLM** | None |
+| **Timeout** | 10 minutes |
+| **Key permissions** | `contents: write`, `pull-requests: write`, `issues: write`, `actions: write` |
 
 ### `claude-task.yml` — Worker
 
 | | |
 |---|---|
-| **Triggers** | `@claude` comment on non-meta issue (excludes `@claude fix`) |
-| **Mode** | Interactive (reads issue body + comment as context) |
+| **Triggers** | `workflow_dispatch` (from meta script), `@claude` comment on non-meta issue (manual retry) |
+| **Implementation** | Claude Code agent with explicit prompt |
 | **Model** | `claude-sonnet-4-6` |
 | **Timeout** | 60 minutes |
-| **Key permissions** | `contents: write`, `pull-requests: write`, `issues: write`, **`actions: write`** (needed for loop closure via `workflow_dispatch`) |
+| **Key permissions** | `contents: write`, `pull-requests: write`, `issues: write`, `actions: write` |
 
 ### `claude-fix.yml` — Fix agent
 
 | | |
 |---|---|
 | **Triggers** | `@claude fix` comment on non-meta issue |
-| **Mode** | Interactive (reads all issue comments including failure context) |
+| **Implementation** | Claude Code agent, picks up existing partial branch |
 | **Model** | `claude-sonnet-4-6` |
 | **Timeout** | 60 minutes |
 | **Key permissions** | Same as task worker |
@@ -225,23 +252,25 @@ Multiple meta issues can coexist in the same repo. Each gets its own `meta/<N>` 
 
 | Guardrail | Description |
 |---|---|
-| **60-minute timeout** | All agent jobs have a hard time limit to prevent runaway costs |
+| **Deterministic meta** | The orchestrator is a bash script — no LLM drift, no probabilistic failures |
+| **60-minute timeout** | Task/fix agents have a hard time limit to prevent runaway costs |
 | **Failure notifications** | Failures are reported on both the meta and task issues |
 | **Fix agent** | `@claude fix` provides semi-automated recovery |
-| **Idempotent orchestrator** | Re-running the meta agent is always safe — it reads current state |
+| **Idempotent orchestrator** | Re-running the meta script is always safe — it reads current state from GitHub |
 | **Conflict resolution** | Task worker auto-resolves merge conflicts via API merge |
 | **Bot allowlist** | Only `claude[bot]` and `github-actions[bot]` can trigger workflows |
-| **Loop closure via `workflow_dispatch`** | Task workers trigger meta after merge (GITHUB_TOKEN events can't cascade) |
+| **Loop closure via `workflow_dispatch`** | Reliable cross-workflow triggering from `GITHUB_TOKEN` |
 
 ### Known limitations
 
 | Limitation | Workaround |
 |---|---|
-| `GITHUB_TOKEN`-generated events don't trigger other workflows (neither PR merges nor bot comments) | Post-step uses `gh workflow run` (workflow_dispatch IS allowed for `GITHUB_TOKEN`) |
+| `GITHUB_TOKEN`-generated events don't trigger other workflows (neither PR merges nor bot comments) | Use `gh workflow run` (workflow_dispatch IS allowed for `GITHUB_TOKEN`) |
 | Workflow validation fails when workflow files change between trigger and execution | Re-trigger via `@claude` comment (uses the latest workflow from `main`) |
 | `git` auth not available in post-steps | Post-steps use `gh api` and `gh` CLI instead of `git` commands |
-| Parallel tasks in the same wave may cause merge conflicts | Post-step tries direct merge, falls back to API merge; unresolvable conflicts trigger a failure notification |
-| P1+ tasks need human review before merging (depending on branch protection) | The orchestrator only auto-merges P0 tasks; others wait for review |
+| Git ref replication lag after branch creation | Meta script waits up to 5s; task worker pre-step polls up to 20s |
+| Parallel tasks in the same wave may touch shared files | Post-step tries direct merge, falls back to API merge; unresolvable conflicts trigger failure notification |
+| P1+ tasks need human review before merging (with branch protection) | The orchestrator comments on P0 tasks mentioning auto-merge; others wait for review |
 
 ---
 
@@ -251,11 +280,13 @@ The defaults should work out of the box, but you can customize:
 
 ### Change the model
 
-Edit the `claude_args` line in the workflows:
+Edit the `claude_args` line in `claude-task.yml` and `claude-fix.yml`:
 
 ```yaml
-claude_args: "--model claude-opus-4-5"  # or claude-haiku-4-5, etc.
+claude_args: "--model claude-opus-4-5 --allowedTools Bash,Read,Glob,Grep,Write,Edit"
 ```
+
+**Important:** the model ID must be the full version, not a short alias. `claude-sonnet` does not work — use `claude-sonnet-4-6`.
 
 ### Change the timeout
 
@@ -267,19 +298,23 @@ By default, any `@claude` comment from a repo collaborator triggers workflows. T
 
 ---
 
-## Architecture decisions
+## Design decisions
 
-A few non-obvious choices documented for future maintainers:
+Non-obvious choices documented for future maintainers:
 
-- **Why not use `prompt` in task/fix workflows?** Interactive mode (no `prompt`) lets the agent read the issue body and triggering comment as natural context. Using `prompt` would switch to automation mode and require manually passing all that context.
+- **Why is the meta orchestrator pure bash instead of an LLM?** The meta does state tracking and dispatching — not creative work. LLMs were probabilistic about parsing wave structure and updating checkboxes. A deterministic script is faster (seconds vs minutes), cheaper ($0 vs ~$0.10 per run), and never drifts.
 
-- **Why `gh api` instead of `git` in post-steps?** Git credentials are revoked after the `claude-code-action` step completes, but `GITHUB_TOKEN` still works with the `gh` CLI. So all remote operations after the agent step use `gh api`.
+- **Why YAML for the plan structure?** It's trivially parseable with `yq` (pre-installed on GitHub runners), human-editable, and naturally expresses waves. ASCII dependency graphs were visual but required LLM interpretation.
+
+- **Why `workflow_dispatch` for loop closure?** GitHub Actions deliberately blocks `GITHUB_TOKEN`-generated events from triggering other workflows (to prevent infinite loops). The exception is `workflow_dispatch` and `repository_dispatch`. Bot comments by `GITHUB_TOKEN` are also silent, so we can't use comments for cross-workflow communication.
 
 - **Why a separate meta branch per plan?** Isolation. Multiple plans can run in parallel without stepping on each other. It also makes it trivial to abandon a plan — just delete the branch.
 
-- **Why does the meta re-check state on every run?** Idempotency. A failed or retried run should never corrupt state or double-assign tasks. The meta always reads the current issue checkboxes and PR statuses as the source of truth.
+- **Why explicit git commands in the task worker prompt?** Earlier versions said "the workflow handles the PR" and the agent interpreted this as "I don't need to commit/push either." Being explicit eliminates the ambiguity.
 
-- **Why `workflow_dispatch` for loop closure instead of just comments?** GitHub Actions deliberately blocks `GITHUB_TOKEN`-generated events from triggering other workflows (to prevent infinite loops). The only exception is `workflow_dispatch` and `repository_dispatch`, so we use those.
+- **Why does the task worker poll for branch visibility?** GitHub has eventual consistency on git refs. When the meta script creates `meta/<N>` and immediately dispatches a task worker, the ref may not be visible to `actions/checkout`. Polling handles this.
+
+- **Why `gh api` instead of `git ls-remote` in post-steps?** Git credentials are revoked after the `claude-code-action` step completes, but `GITHUB_TOKEN` still works with the `gh` CLI.
 
 ---
 

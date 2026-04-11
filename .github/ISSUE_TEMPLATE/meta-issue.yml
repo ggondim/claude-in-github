@@ -8,15 +8,15 @@ body:
       value: |
         ## How this works
 
-        A meta issue represents an **implementation plan** — a set of task issues organized in dependency waves. When you kickstart this issue with `@claude`, the orchestrator will:
+        A meta issue represents an **implementation plan** — a set of task issues organized into dependency waves. When you kickstart this issue with `@claude` (or assign it to someone), the orchestrator will:
 
         1. Create a `meta/<this-issue-number>` branch from `main`
-        2. Assign the first wave of tasks (by commenting `@claude` on them)
-        3. Track progress as tasks are merged
+        2. Dispatch the first wave of tasks (one task worker per issue)
+        3. Track progress as tasks are merged into the meta branch
         4. Advance through waves until everything is done
         5. Open a final PR: `meta/<N>` → `main`
 
-        **Before creating this issue, create the individual task issues first** so you can reference them by number below.
+        **Before creating this issue, create the individual task issues first** so you can reference them by number in the YAML plan below.
 
   - type: textarea
     id: purpose
@@ -29,54 +29,60 @@ body:
       required: true
 
   - type: textarea
-    id: graph
+    id: plan
     attributes:
-      label: Dependency Graph
-      description: ASCII graph showing how issues depend on each other. Keep it in a code block.
-      value: |
-        ```
-        #N1 → #N2 → #N3
-                 ↘ #N4
-        ```
-      render: markdown
-    validations:
-      required: true
-
-  - type: textarea
-    id: execution_order
-    attributes:
-      label: Execution Order (Waves)
+      label: Plan (YAML — parsed by the orchestrator)
       description: |
-        Group task issues into waves. Issues within the same wave can run in parallel. A wave is ready when ALL issues from previous waves are checked. **Use the exact checkbox format shown** — the orchestrator parses these.
+        Define the waves and which task issues belong to each. The orchestrator parses this YAML block deterministically, so **the format matters**: keep it inside a code block with `yaml` language marker, and use the structure shown.
+
+        - Each wave has a `name` and a list of `tasks` (issue numbers).
+        - Issues within the same wave run in parallel.
+        - A wave is "ready" when ALL issues from previous waves are merged.
+        - Wave order = dependency order.
       value: |
-        ### Wave 1 — Foundation
-        - [ ] #N1 Short description `P0`
-
-        ### Wave 2 — Depends on Wave 1
-        - [ ] #N2 Short description `P0`
-        - [ ] #N3 Short description `P1`
-
-        ### Wave 3 — Depends on Wave 2
-        - [ ] #N4 Short description `P2`
+        ```yaml
+        waves:
+          - name: Foundation
+            tasks: [1]
+          - name: Contracts
+            tasks: [2]
+          - name: Core
+            tasks: [3, 4, 5]
+        ```
       render: markdown
     validations:
       required: true
 
   - type: textarea
-    id: instructions
+    id: progress
     attributes:
-      label: Orchestrator Instructions
-      description: Additional guidance for the orchestrator (optional).
+      label: Progress (checkboxes — updated by the orchestrator)
+      description: |
+        A flat checkbox list of all task issues. The orchestrator marks these as `[x]` when their PRs are merged. Initial state should be all unchecked.
       value: |
-        1. Issues within the same wave can be assigned in parallel
-        2. A wave is ready when ALL issues from previous waves are checked
-        3. An individual issue is ready when ALL its explicit dependencies (listed in its body) are checked
-        4. Issues labeled `priority:P0` will be auto-merged
+        - [ ] #1 Title `P0`
+        - [ ] #2 Title `P0`
+        - [ ] #3 Title `P0`
+        - [ ] #4 Title `P1`
+        - [ ] #5 Title `P1`
       render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes (optional)
+      description: Any additional context, links to design docs, or special instructions.
+      placeholder: |
+        - Related design doc: [link]
+        - Slack thread: [link]
 
   - type: markdown
     attributes:
       value: |
         ---
 
-        **After creating this issue:** comment `@claude` on it to kickstart the orchestration loop.
+        **After creating this issue:** comment `@claude` on it (or assign it) to kickstart the orchestration loop.
+
+        **Priorities:** tasks labeled `priority:P0` are auto-merged. Others may require human review depending on your branch protection rules.

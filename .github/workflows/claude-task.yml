@@ -4,58 +4,69 @@
 #
 # PURPOSE
 # -------
-# Implements a single issue from the implementation plan. Triggered when the
-# Meta Orchestrator (or a human) comments `@claude` on a task issue. Reads
-# the issue body as its specification, writes code, creates a PR, and merges.
+# Implements a single issue from the implementation plan. Triggered by the
+# meta orchestrator (via workflow_dispatch) or manually (via @claude comment).
+# Reads the issue body as its specification, writes code, creates a branch,
+# commits, and the post-step auto-creates and merges the PR.
 #
-# HOW IT WORKS
-# ------------
-# 1. Triggered by an `@claude` comment on a non-meta issue (excludes `@claude fix`).
-# 2. Extracts the base branch from the comment (e.g., `meta/17`).
-#    The meta orchestrator always includes `Base branch: \`meta/<N>\`` in
-#    its trigger comment. Falls back to `main` if not found.
-# 3. Checks out the base branch (NOT `main`) to avoid merge conflicts.
-# 4. Runs the Claude agent in interactive mode (no `prompt` input).
-#    The agent reads the issue body and the triggering comment as context.
-# 5. After the agent finishes, a post-step automatically:
-#    a. Finds the branch the agent pushed
-#    b. Creates a PR targeting the meta branch
-#    c. Merges the PR (with conflict resolution if needed)
-#    d. Triggers the meta workflow via workflow_dispatch (loop closure)
+# TRIGGERS
+# --------
+# 1. workflow_dispatch — called by the meta orchestrator script with inputs
+#    (issue_number, base_branch). This is the primary trigger for autonomous
+#    loop execution.
+# 2. issue_comment — @claude comment on a non-meta issue. This is a manual
+#    override path (e.g., for retrying a specific task). Excludes `@claude fix`
+#    which is handled by claude-fix.yml.
 #
 # BRANCH MODEL
 # ------------
-# The `branch_prefix` is set dynamically to `claude/<meta_number>-` so that
-# task branches are namespaced under their meta issue:
-#   meta/17 → claude/17-issue-4-20260410-2205
+# Task branches are namespaced under their meta issue:
+#   claude/<meta_number>-issue-<task_number>-<timestamp>
+# Example: `claude/17-issue-4-20260410-2205`
+# This is enforced via the `branch_prefix` input to claude-code-action AND
+# via explicit git commands in the prompt.
 #
-# WHY NO `prompt` INPUT
-# ---------------------
-# Without `prompt`, the action runs in "interactive mode" — it reads the
-# issue body and triggering comment as context. The issue body contains the
-# full spec (tasks, acceptance criteria), and the comment contains branch
-# instructions from the orchestrator.
+# WHY EXPLICIT `prompt`
+# --------------------
+# When triggered via workflow_dispatch, the action cannot auto-detect context
+# from the event (unlike issue_comment where it reads the triggering comment).
+# The prompt is provided explicitly so behavior is identical for both trigger
+# types: the agent reads the target issue and implements it.
+#
+# The prompt includes explicit git commands (checkout, add, commit, push)
+# because earlier versions that said "the workflow handles the PR" led the
+# agent to not commit/push at all.
+#
+# WAIT FOR BRANCH VISIBILITY
+# --------------------------
+# GitHub has eventual consistency on git refs. When the meta script creates
+# meta/<N> and immediately dispatches a task worker, the branch may not be
+# visible to the task worker's checkout. The pre-step polls for up to 20s.
 #
 # AUTO PR + MERGE (post-step)
 # ---------------------------
-# The `claude-code-action` in interactive mode does NOT create PRs — it
-# pushes a branch and posts a "Create PR" link. The post-step closes this
-# gap by creating the PR and merging it. Uses `gh api` instead of `git`
-# commands because git auth is not available after the action completes.
+# The agent creates a branch and pushes it, but does NOT create a PR. The
+# post-step:
+# 1. Finds the branch via `gh api git/matching-refs` (not `git ls-remote`
+#    because git auth is not available after the action completes)
+# 2. Creates a PR with `fixes #<N>` body
+# 3. Tries `gh pr merge --merge`
+# 4. Falls back to `gh api pulls/<N>/merge` if direct merge fails
+# This makes the entire flow autonomous — no human needed to create PRs.
 #
 # LOOP CLOSURE
 # ------------
 # After a successful merge, the post-step calls `gh workflow run claude-meta.yml`
-# with the meta issue number. This is necessary because GITHUB_TOKEN-generated
-# events (PR merges, comments) don't trigger other workflows — but
-# workflow_dispatch IS allowed. This closes the loop without manual intervention.
+# with the meta issue number. Necessary because GITHUB_TOKEN-generated events
+# (PR merges, comments) don't trigger other workflows — but workflow_dispatch
+# IS allowed.
 #
 # TIMEOUT: 60 minutes
 #
 # FAILURE HANDLING
 # ----------------
 # On failure, notifications are posted on both the meta issue and the task
-# issue itself with `@claude fix` instructions for recovery.
+# issue with `@claude fix` retry instructions.
 # =============================================================================
 
 name: Claude Task Worker
@@ -70,34 +81,78 @@ permissions:
 on:
   issue_comment:
     types: [created]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Task issue number to implement'
+        required: true
+        type: string
+      base_branch:
+        description: 'Base branch (e.g. meta/17)'
+        required: true
+        type: string
 
 jobs:
   execute:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
-    # Trigger on @claude comments on non-meta issues.
-    # Excludes @claude fix (handled by claude-fix.yml).
+    # Triggers:
+    # 1. workflow_dispatch — called by the meta orchestrator with inputs
+    # 2. @claude comment on a non-meta issue (human manual trigger)
+    # Excludes `@claude fix` (handled by claude-fix.yml)
     if: >
-      contains(github.event.comment.body, '@claude')
-      && !contains(toJSON(github.event.issue.labels.*.name), 'meta')
-      && !contains(github.event.comment.body, '@claude fix')
+      github.event_name == 'workflow_dispatch'
+      || (contains(github.event.comment.body, '@claude')
+          && !contains(toJSON(github.event.issue.labels.*.name), 'meta')
+          && !contains(github.event.comment.body, '@claude fix'))
 
     steps:
-      # --- Extract base branch from the orchestrator's comment ---
-      # The meta orchestrator always includes: Base branch: `meta/<N>`
-      # We parse this to dynamically configure checkout and PR target.
-      - name: Extract meta context from comment
+      # --- Determine issue number and base branch ---
+      # workflow_dispatch → from inputs
+      # issue_comment → parse base_branch from comment body, use issue.number
+      - name: Extract context
         id: meta
         env:
+          EVENT: ${{ github.event_name }}
           COMMENT_BODY: ${{ github.event.comment.body }}
+          INPUT_ISSUE: ${{ github.event.inputs.issue_number }}
+          INPUT_BASE: ${{ github.event.inputs.base_branch }}
+          COMMENT_ISSUE: ${{ github.event.issue.number }}
         run: |
-          BASE_BRANCH=$(echo "$COMMENT_BODY" | grep -oP 'Base branch: `\K[^`]+' || echo "main")
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            ISSUE_NUM="$INPUT_ISSUE"
+            BASE_BRANCH="$INPUT_BASE"
+          else
+            ISSUE_NUM="$COMMENT_ISSUE"
+            BASE_BRANCH=$(echo "$COMMENT_BODY" | grep -oP 'Base branch: `\K[^`]+' || echo "main")
+          fi
           META_NUM=$(echo "$BASE_BRANCH" | grep -oP '\d+' || echo "0")
+          echo "issue_number=$ISSUE_NUM" >> "$GITHUB_OUTPUT"
           echo "base_branch=$BASE_BRANCH" >> "$GITHUB_OUTPUT"
           echo "meta_number=$META_NUM" >> "$GITHUB_OUTPUT"
 
+      # --- Wait for base branch visibility (replication lag) ---
+      # When meta dispatches a task worker right after creating meta/<N>,
+      # the branch may not be immediately visible. Poll for up to 20s.
+      - name: Wait for base branch visibility
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_BRANCH: ${{ steps.meta.outputs.base_branch }}
+        run: |
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if gh api "repos/${{ github.repository }}/git/refs/heads/$BASE_BRANCH" &>/dev/null; then
+              echo "Branch $BASE_BRANCH is visible (attempt $i)"
+              exit 0
+            fi
+            echo "Waiting for branch $BASE_BRANCH to propagate (attempt $i)..."
+            sleep 2
+          done
+          echo "::error::Branch $BASE_BRANCH not visible after 10 attempts"
+          exit 1
+
       # --- Checkout the meta branch, NOT main ---
+      # Eliminates the root cause of merge conflicts.
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -105,21 +160,48 @@ jobs:
           fetch-depth: 0
 
       # --- Run the Claude agent ---
+      # Explicit prompt so behavior is identical for both trigger types
+      # (workflow_dispatch and issue_comment). The agent reads the target
+      # issue and implements it with explicit git commands.
       - name: Run Claude Task Worker
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--model claude-sonnet-4-6"
+          claude_args: "--model claude-sonnet-4-6 --allowedTools Bash,Read,Glob,Grep,Write,Edit"
           allowed_bots: "claude[bot],github-actions[bot]"
           base_branch: ${{ steps.meta.outputs.base_branch }}
           branch_prefix: "claude/${{ steps.meta.outputs.meta_number }}-"
+          prompt: |
+            Implement issue #${{ steps.meta.outputs.issue_number }} in this repository.
+
+            ## Steps
+
+            1. Read the full issue body: `gh issue view ${{ steps.meta.outputs.issue_number }}` — the body contains the complete specification (tasks, acceptance criteria, dependencies).
+
+            2. Implement all tasks listed in the issue, following the acceptance criteria. Use Write/Edit tools to create/modify files.
+
+            3. Create a NEW branch from the current HEAD and commit your changes:
+               ```
+               git checkout -b claude/${{ steps.meta.outputs.meta_number }}-issue-${{ steps.meta.outputs.issue_number }}-$(date +%Y%m%d-%H%M%S)
+               git add -A
+               git commit -m "Implement issue #${{ steps.meta.outputs.issue_number }}"
+               git push -u origin HEAD
+               ```
+
+            4. Do NOT create a PR — the workflow's post-step will detect your branch and create/merge the PR automatically.
+
+            ## Context
+
+            - You are checked out on `${{ steps.meta.outputs.base_branch }}` (the meta integration branch).
+            - Your work must be on a new branch, not directly on the base branch.
+            - Keep the scope tight: only implement what the issue asks for.
 
       # --- Auto-create PR and merge ---
       - name: Auto-create PR and merge
         if: success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE_NUM: ${{ github.event.issue.number }}
+          ISSUE_NUM: ${{ steps.meta.outputs.issue_number }}
           BASE_BRANCH: ${{ steps.meta.outputs.base_branch }}
         run: |
           # Use gh api (git auth is not available in post-steps)
@@ -134,20 +216,17 @@ jobs:
 
           echo "Found branch: $BRANCH"
 
-          # Check if PR already exists
           EXISTING=$(gh pr list --head "$BRANCH" --base "$BASE_BRANCH" --json number --jq 'length' 2>/dev/null || echo "0")
           if [ "$EXISTING" -gt 0 ]; then
             echo "PR already exists for $BRANCH"
             exit 0
           fi
 
-          # Create PR
           TITLE=$(gh issue view "$ISSUE_NUM" --json title --jq '.title')
           PR_URL=$(gh pr create --base "$BASE_BRANCH" --head "$BRANCH" --title "$TITLE" --body "fixes #${ISSUE_NUM}")
           PR_NUM=$(echo "$PR_URL" | grep -oP '\d+$')
           echo "Created PR #$PR_NUM"
 
-          # Try direct merge
           if gh pr merge "$PR_NUM" --merge 2>/dev/null; then
             echo "PR #$PR_NUM merged successfully"
             exit 0
@@ -183,23 +262,17 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE_NUM: ${{ github.event.issue.number }}
+          ISSUE_NUM: ${{ steps.meta.outputs.issue_number }}
           META_NUM: ${{ steps.meta.outputs.meta_number }}
           RUN_ID: ${{ github.run_id }}
         run: |
           if [ "$META_NUM" != "0" ] && [ -n "$META_NUM" ]; then
-            gh issue comment "$META_NUM" --body "$(cat <<EOF
-          ⚠️ **Task Worker Failed** — Issue #${ISSUE_NUM}
+            gh issue comment "$META_NUM" --body "⚠️ **Task Worker Failed** — Issue #${ISSUE_NUM}
 
           - **Run:** https://github.com/${{ github.repository }}/actions/runs/${RUN_ID}
-          - **Action needed:** Comment \`@claude fix\` on issue #${ISSUE_NUM} to retry.
-          EOF
-          )"
+          - **Action needed:** Comment \`@claude fix\` on issue #${ISSUE_NUM} to retry."
           fi
 
-          gh issue comment "$ISSUE_NUM" --body "$(cat <<EOF
-          ⚠️ **Task worker failed.** [View logs](https://github.com/${{ github.repository }}/actions/runs/${RUN_ID})
+          gh issue comment "$ISSUE_NUM" --body "⚠️ **Task worker failed.** [View logs](https://github.com/${{ github.repository }}/actions/runs/${RUN_ID})
 
-          To retry with fix context, comment \`@claude fix\` on this issue.
-          EOF
-          )"
+          To retry with fix context, comment \`@claude fix\` on this issue."
