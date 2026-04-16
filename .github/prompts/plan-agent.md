@@ -6,7 +6,7 @@ architecture, dependencies, and correct wave ordering before writing.
 - `/tmp/issue-request.md` — the feature / problem description
 - The repository is checked out at the current working directory — use
   Read/Glob/Grep freely to understand existing code before planning
-- If the repository 
+- If the repository has any CLAUDE.md, AGENTS.md, VISION.md or CONSTITUTION.md files, read them first for important context about how this project is structured and how agents should operate within it.
 
 ## Output
 Write your plan to `/tmp/plan-body.md` using EXACTLY this structure:
