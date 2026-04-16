@@ -152,6 +152,16 @@ jobs:
           cat /tmp/task-spec.md
           echo "--- End task spec ---"
 
+      # --- Load prompt from .github/prompts/ ---
+      - name: Load prompt
+        run: |
+          DELIM="___CLAUDE_PROMPT_EOF___"
+          {
+            echo "TASK_PROMPT<<$DELIM"
+            cat .github/prompts/task-worker.md
+            echo "$DELIM"
+          } >> "$GITHUB_ENV"
+
       # --- Run the Claude agent (LLM only writes code) ---
       # Minimal prompt: read the spec, implement it, no git, no PR.
       # All git/PR/merge operations happen in subsequent bash steps.
@@ -161,20 +171,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: "--model claude-sonnet-4-6 --allowedTools Read,Glob,Grep,Write,Edit,Bash"
           allowed_bots: "claude[bot],github-actions[bot]"
-          prompt: |
-            Implement the task described in `/tmp/task-spec.md`.
-
-            Steps:
-            1. Read `/tmp/task-spec.md` to understand the task (title, tasks, acceptance criteria).
-            2. Use Write/Edit tools to create/modify files as needed to fulfill the spec.
-            3. Follow the acceptance criteria exactly.
-            4. Keep scope tight — only implement what the spec asks for.
-
-            Constraints:
-            - Do NOT run `git` commands. The workflow handles git operations.
-            - Do NOT create branches, commits, or pull requests.
-            - Do NOT call the GitHub API.
-            - Just write the code changes.
+          prompt: ${{ env.TASK_PROMPT }}
 
       # --- Commit and push (deterministic) ---
       # The claude-code-action revokes git credentials after running, so we

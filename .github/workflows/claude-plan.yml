@@ -1,0 +1,305 @@
+# =============================================================================
+# Claude Plan Agent
+# =============================================================================
+#
+# PURPOSE
+# -------
+# Turns a feature request / problem description into a ready-to-run meta issue:
+#   1. A deep-reasoning agent (opus, extended thinking) designs the plan
+#   2. A splitter agent (sonnet) extracts task specs into JSONL
+#   3. A deterministic bash step creates the task issues, substitutes
+#      placeholders with real issue numbers, updates the issue body, labels
+#      it `meta`, and replies to the commenter
+#
+# The resulting issue is a fully-formed meta issue matching the meta-issue
+# template (Purpose / YAML Plan / Progress). It is NOT kickstarted here —
+# the human reviews, then comments `@claude` to hand off to the orchestrator.
+#
+# TRIGGER
+# -------
+# `@plan-agent` mention on an issue that is neither already planned (`meta`
+# label) nor a task issue (any `priority:P*` label). PR comments are ignored.
+#
+# DIRECTIVE SYNTAX (optional, in the comment)
+# -------------------------------------------
+#   @plan-agent [model] [reasoning]
+#
+# - model:     opus | sonnet | haiku                (default: opus)
+# - reasoning: off | low | medium | high | max      (default: high)
+#
+# Examples:
+#   @plan-agent                     → opus + high thinking
+#   @plan-agent sonnet              → sonnet + high thinking
+#   @plan-agent opus max            → opus + ultrathink
+#   @plan-agent haiku off           → haiku, no extended thinking
+#
+# Reasoning is applied via Claude Code's magic phrases ("think hard",
+# "think very hard", "ultrathink") injected into the plan agent prompt.
+#
+# PLACEHOLDER CONVENTION
+# ----------------------
+# The plan agent uses `T1`, `T2`, ... as task identifiers. Convention is:
+#   - YAML:     `tasks: [T1, T2]`    (bare, string-typed in YAML)
+#   - Progress: `- [ ] #T1 Title`    (with `#` prefix)
+# After task issues are created, a single perl substitution replaces every
+# `\bTN\b` with the real issue number. This works in BOTH contexts:
+#   YAML      `tasks: [T1]`      → `tasks: [42]`
+#   Progress  `- [ ] #T1 Title`  → `- [ ] #42 Title`
+#
+# TIMEOUT: 30 minutes
+# =============================================================================
+
+name: Claude Plan Agent
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    if: >
+      github.event.issue.pull_request == null
+      && contains(github.event.comment.body, '@plan-agent')
+      && !contains(toJSON(github.event.issue.labels.*.name), 'meta')
+      && !contains(toJSON(github.event.issue.labels.*.name), 'priority:P')
+
+    steps:
+      # --- Extract context + parse directive (model + reasoning) ---
+      # Directive: "@plan-agent [model] [reasoning]" on the mention line.
+      # Unknown tokens are ignored; missing tokens fall back to defaults.
+      - name: Extract context
+        id: meta
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+        run: |
+          DIRECTIVE=$(echo "$COMMENT_BODY" | grep -oE '@plan-agent.*' | head -1 || echo "@plan-agent")
+          read -ra TOKENS <<< "$DIRECTIVE"
+
+          MODEL="claude-opus-4-7"
+          REASONING="high"
+
+          for tok in "${TOKENS[@]:1}"; do
+            # Lowercase (portable — avoids bash 4 ${tok,,}) and strip punctuation
+            t=$(echo "$tok" | tr '[:upper:]' '[:lower:]' | tr -d ',.!?:;')
+            case "$t" in
+              opus)                    MODEL="claude-opus-4-7" ;;
+              sonnet)                  MODEL="claude-sonnet-4-6" ;;
+              haiku)                   MODEL="claude-haiku-4-5-20251001" ;;
+              off|none|no-think)       REASONING="off" ;;
+              low)                     REASONING="low" ;;
+              med|medium)              REASONING="medium" ;;
+              high)                    REASONING="high" ;;
+              max|ultra|ultrathink)    REASONING="max" ;;
+            esac
+          done
+
+          case "$REASONING" in
+            off)    THINK_PHRASE="" ;;
+            low)    THINK_PHRASE="Think before writing." ;;
+            medium) THINK_PHRASE="Think hard before writing." ;;
+            high)   THINK_PHRASE="Think very hard before writing." ;;
+            max)    THINK_PHRASE="Ultrathink — take extensive time to reason before writing." ;;
+          esac
+
+          echo "Directive: model=$MODEL reasoning=$REASONING"
+
+          echo "issue_number=$ISSUE_NUM" >> "$GITHUB_OUTPUT"
+          echo "commenter=$COMMENTER" >> "$GITHUB_OUTPUT"
+          echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+          echo "reasoning=$REASONING" >> "$GITHUB_OUTPUT"
+          echo "think_phrase=$THINK_PHRASE" >> "$GITHUB_OUTPUT"
+
+      # --- Checkout so the plan agent can explore the codebase ---
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # --- Fetch the feature request body to a local file ---
+      - name: Fetch issue body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUM: ${{ steps.meta.outputs.issue_number }}
+        run: |
+          gh issue view "$ISSUE_NUM" --json title,body \
+            --jq '"# " + .title + "\n\n" + .body' > /tmp/issue-request.md
+          echo "--- Issue request ---"
+          cat /tmp/issue-request.md
+          echo "--- End ---"
+
+      # --- Load prompts from .github/prompts/ into env vars ---
+      # Prompts are stored as .md files for easy editing without touching
+      # the workflow YAML. {{PLACEHOLDER}} tokens are substituted here.
+      - name: Load prompts
+        env:
+          THINK_PHRASE: ${{ steps.meta.outputs.think_phrase }}
+        run: |
+          DELIM="___CLAUDE_PROMPT_EOF___"
+
+          # Plan agent — substitute {{THINK_PHRASE}}
+          PLAN=$(cat .github/prompts/plan-agent.md)
+          PLAN="${PLAN//\{\{THINK_PHRASE\}\}/$THINK_PHRASE}"
+          {
+            echo "PLAN_PROMPT<<$DELIM"
+            printf '%s\n' "$PLAN"
+            echo "$DELIM"
+          } >> "$GITHUB_ENV"
+
+          # Splitter agent — no placeholders
+          {
+            echo "SPLITTER_PROMPT<<$DELIM"
+            cat .github/prompts/splitter-agent.md
+            echo "$DELIM"
+          } >> "$GITHUB_ENV"
+
+      # --- Agent 1: Plan Agent (model + reasoning from directive) ---
+      # Model and extended-thinking budget are controlled by the directive
+      # parsed in the Extract context step. Reasoning level is injected via
+      # Claude Code's magic phrases ("think hard"/"think very hard"/"ultrathink")
+      # substituted into the prompt template at {{THINK_PHRASE}}.
+      - name: Run Plan Agent
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--model ${{ steps.meta.outputs.model }} --allowedTools Read,Glob,Grep,Write"
+          allowed_bots: "claude[bot],github-actions[bot]"
+          prompt: ${{ env.PLAN_PROMPT }}
+
+      # --- Agent 2: Splitter (Sonnet) ---
+      - name: Run Splitter Agent
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--model claude-sonnet-4-6 --allowedTools Read,Write"
+          allowed_bots: "claude[bot],github-actions[bot]"
+          prompt: ${{ env.SPLITTER_PROMPT }}
+
+      # --- Deterministic: create task issues, substitute placeholders, finalize ---
+      - name: Create task issues and finalize meta
+        id: finalize
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUM: ${{ steps.meta.outputs.issue_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          [[ -s /tmp/plan-body.md ]]  || { echo "::error::Plan agent produced no plan"; exit 1; }
+          [[ -s /tmp/tasks.jsonl ]]   || { echo "::error::Splitter produced no tasks"; exit 1; }
+
+          echo "--- Plan body ---"
+          cat /tmp/plan-body.md
+          echo "--- Tasks JSONL ---"
+          cat /tmp/tasks.jsonl
+          echo "--- End ---"
+
+          # Validate JSONL
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            echo "$line" | jq -e . >/dev/null || { echo "::error::Invalid JSONL line: $line"; exit 1; }
+          done < /tmp/tasks.jsonl
+
+          # Create task issues; build placeholder -> real number map
+          : > /tmp/sub-map.txt
+          TASK_COUNT=0
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            PLACEHOLDER=$(echo "$line" | jq -r '.placeholder')
+            TITLE=$(echo "$line" | jq -r '.title')
+            BODY=$(echo "$line" | jq -r '.body')
+            LABELS=$(echo "$line" | jq -r '.labels | join(",")')
+
+            # Append a footer so humans can trace tasks back to the meta issue
+            FULL_BODY=$(printf '%s\n\n---\n_Part of meta issue #%s._\n' "$BODY" "$ISSUE_NUM")
+
+            ARGS=(--repo "$REPO" --title "$TITLE" --body "$FULL_BODY")
+            [[ -n "$LABELS" ]] && ARGS+=(--label "$LABELS")
+
+            URL=$(gh issue create "${ARGS[@]}")
+            NUM=$(echo "$URL" | grep -oP '\d+$')
+            echo "$PLACEHOLDER=$NUM" >> /tmp/sub-map.txt
+            TASK_COUNT=$((TASK_COUNT + 1))
+            echo "Created $PLACEHOLDER → #$NUM ($TITLE)"
+          done < /tmp/tasks.jsonl
+
+          [[ "$TASK_COUNT" -gt 0 ]] || { echo "::error::No tasks were created"; exit 1; }
+
+          # Substitute placeholders in plan body.
+          # A single \bTN\b substitution works in both YAML (`tasks: [T1]` → `[42]`)
+          # and Progress (`- [ ] #T1 ...` → `- [ ] #42 ...`).
+          perl - /tmp/plan-body.md /tmp/sub-map.txt > /tmp/final-body.md <<'PERL'
+          my ($src, $map_file) = @ARGV;
+          my %map;
+          open(my $m, "<", $map_file) or die "map: $!";
+          while (<$m>) {
+            chomp;
+            next unless /^(\S+?)=(\S+)$/;
+            $map{$1} = $2;
+          }
+          close($m);
+          # Apply longer placeholders first (T10 before T1) as defensive ordering
+          my @keys = sort { length($b) <=> length($a) || $b cmp $a } keys %map;
+          open(my $f, "<", $src) or die "src: $!";
+          while (my $line = <$f>) {
+            for my $ph (@keys) {
+              my $num = $map{$ph};
+              $line =~ s/\b\Q$ph\E\b/$num/g;
+            }
+            print $line;
+          }
+          close($f);
+          PERL
+
+          # Strip the staging `## Tasks` section — everything from `## Tasks` up to
+          # (but not including) the next `## ` heading.
+          awk '
+            /^## Tasks[[:space:]]*$/ { skip=1; next }
+            /^## / && skip          { skip=0 }
+            !skip
+          ' /tmp/final-body.md > /tmp/meta-body.md
+
+          echo "--- Final meta issue body ---"
+          cat /tmp/meta-body.md
+          echo "--- End ---"
+
+          # Update the issue body and add the meta label
+          gh issue edit "$ISSUE_NUM" --body-file /tmp/meta-body.md
+          gh issue edit "$ISSUE_NUM" --add-label meta
+
+          echo "task_count=$TASK_COUNT" >> "$GITHUB_OUTPUT"
+
+      # --- Reply to the commenter ---
+      - name: Reply to commenter
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUM: ${{ steps.meta.outputs.issue_number }}
+          COMMENTER: ${{ steps.meta.outputs.commenter }}
+          TASK_COUNT: ${{ steps.finalize.outputs.task_count }}
+          MODEL: ${{ steps.meta.outputs.model }}
+          REASONING: ${{ steps.meta.outputs.reasoning }}
+        run: |
+          gh issue comment "$ISSUE_NUM" --body "@$COMMENTER — Plan ready. Created **${TASK_COUNT}** task issues and labeled this one as \`meta\`.
+
+          _Planned with \`${MODEL}\` at reasoning \`${REASONING}\`._
+
+          **Next step:** review the plan in the issue body above. When you're ready, comment \`@claude\` on this issue to kickstart the orchestration loop."
+
+      # --- Failure notification ---
+      - name: Notify failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUM: ${{ steps.meta.outputs.issue_number }}
+          COMMENTER: ${{ steps.meta.outputs.commenter }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          gh issue comment "$ISSUE_NUM" --body "@$COMMENTER — ⚠️ **Plan agent failed.** [View logs](https://github.com/${{ github.repository }}/actions/runs/${RUN_ID})"
