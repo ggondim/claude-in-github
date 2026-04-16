@@ -245,6 +245,13 @@ else
   done
 fi
 
+# Kickstart-time side effect: drop the `draft` label if the plan-agent left
+# it on the meta issue. Once the orchestrator has committed to running,
+# `@plan-agent` revisions should be blocked — removing `draft` does that
+# via the claude-plan.yml trigger filter. Silent no-op for manually-
+# authored meta issues that never had `draft`.
+gh issue edit "$META" --remove-label draft 2>/dev/null || true
+
 # -----------------------------------------------------------------------------
 # 4. Get merged PRs targeting the meta branch → derive done tasks
 # -----------------------------------------------------------------------------
@@ -354,12 +361,19 @@ if $ALL_WAVES_DONE; then
     FINAL_PR="#$EXISTING_FINAL"
   else
     log "Opening final PR $BRANCH → main"
+    # Use `Closes #N` syntax for every task issue and the meta issue itself —
+    # GitHub auto-closes them when this PR merges into the default branch.
+    # (Task PRs target `meta/*`, not `main`, so their own `fixes #N` bodies
+    # don't auto-close anything. The final PR is the only merge-into-main
+    # event, so it must carry all the closure directives.)
     FINAL_BODY=$(cat <<EOF
 ## Summary
 
 All tasks in meta issue #$META are complete:
 
-$(for t in "${DONE_TASKS[@]}"; do echo "- #$t"; done)
+$(for t in "${DONE_TASKS[@]}"; do echo "- Closes #$t"; done)
+
+Closes #$META
 
 🎉 Implementation roadmap complete.
 EOF

@@ -12,7 +12,7 @@ Four composable GitHub Actions workflows plus tooling:
 
 | File | Purpose |
 |---|---|
-| `.github/workflows/claude-plan.yml` | **Planner** — `@plan-agent` turns a feature request into a ready-to-kickstart meta issue (plus task issues) |
+| `.github/workflows/claude-plan.yml` | **Planner** — `@plan-agent` runs an iterative planning conversation (questions → plan → revisions) and produces a ready-to-kickstart meta issue |
 | `.github/workflows/claude-meta.yml` | **Orchestrator** — deterministic bash script that tracks progress and dispatches tasks |
 | `.github/workflows/claude-task.yml` | **Worker** — implements a single task, creates and auto-merges its PR |
 | `.github/workflows/claude-fix.yml` | **Recovery** — `@claude fix` picks up failed tasks, resolves conflicts |
@@ -42,24 +42,31 @@ Four composable GitHub Actions workflows plus tooling:
  Human files a feature request and
  comments @plan-agent [model] [reasoning]
         │
-        ▼
-   ┌──────────────────────────────────────────┐
-   │         claude-plan.yml                   │
-   │  1. Parse directive (model, reasoning)    │
-   │  2. Plan agent (opus): explore repo,      │
-   │     draft meta-issue plan with            │
-   │     placeholder task IDs                  │
-   │  3. Splitter agent (sonnet): extract      │
-   │     task specs into JSONL                 │
-   │  4. Bash: create task issues,             │
-   │     substitute placeholders with real     │
-   │     issue numbers, update issue body,     │
-   │     label `meta`+`draft`, assign author   │
-   └──────────────┬───────────────────────────┘
-                  │  (issue now looks like a manually-authored meta)
+        ▼                                         ┌──── human answers questions in new comments ───┐
+   ┌──────────────────────────────────────────┐   │                                                │
+   │         claude-plan.yml                   │◄──┤           human comments revision requests ◄──┤
+   │  1. Parse directive (model, reasoning)    │   │                                                │
+   │  2. On revision: gather conversation      │   │                                                │
+   │     context (current plan + existing      │   │                                                │
+   │     tasks + recent comments)              │   │                                                │
+   │  3. Plan agent: Questions Mode OR         │   │                                                │
+   │     Plan Mode (new or revised)            │   │                                                │
+   │     ├── Questions → post comment, stop ───┼───┘                                                │
+   │     └── Plan ─── 4. Splitter: extract    │                                                     │
+   │                    tasks (ref = Tn or #)  │                                                     │
+   │                  5. Bash reconciliation:  │                                                     │
+   │                    integer ref → edit     │                                                     │
+   │                    Tn ref       → create  │                                                     │
+   │                    dropped      → close   │                                                     │
+   │                    + label meta+draft     │                                                     │
+   │                    (first pass only)      │                                                     │
+   └──────────────┬───────────────────────────┘                                                      │
+                  │                                                                                  │
+                  │  (issue now `meta`+`draft`; further @plan-agent → revision) ──────────────────── ┘
                   ▼
- Human reviews the plan, comments @claude to kickstart
-        │
+ Human reviews the plan, comments @claude to approve + kickstart
+        │           (meta orchestrator removes the `draft` label,
+        │            blocking further @plan-agent revisions)
         ▼
    ┌──────────────────────────────────────────┐
    │         claude-meta.yml (bash)            │
@@ -221,26 +228,82 @@ If the smoke test passes, your setup is ready for real work.
 
 ### Option A — Generate the plan with `@plan-agent` (easiest)
 
-1. **File a feature/problem issue** — just describe what you want, no template required. The issue must NOT already have the `meta` label or a `priority:P*` label (those mark existing meta and task issues, respectively).
+Planning is a short conversation on the issue. The plan-agent can ask clarifying questions, propose a plan, accept revision requests, and iterate until you approve by commenting `@claude`.
 
-2. **Comment `@plan-agent`** to trigger the planner. You can pin the model and reasoning budget with a directive:
+#### 1. File a feature/problem issue
 
-   ```
-   @plan-agent                    → opus + high thinking (defaults)
-   @plan-agent sonnet             → sonnet + high thinking
-   @plan-agent opus max           → opus + ultrathink
-   @plan-agent haiku off          → haiku, no extended thinking
-   ```
+Just describe what you want — no template required. The trigger filter requires the issue to NOT be a task (`priority:P*` label) and to be either unplanned (no `meta` label) or still a draft (`meta`+`draft`).
 
-   Directive tokens: **model** is `opus` | `sonnet` | `haiku`; **reasoning** is `off` | `low` | `medium` | `high` | `max`. Unknown tokens are ignored.
+#### 2. Trigger with `@plan-agent`
 
-3. **Two agents run in sequence:**
-   - **Plan agent** — explores the repo with Read/Glob/Grep and drafts the meta-issue body (Purpose, YAML Plan, Progress, Notes) using placeholder IDs (`T1`, `T2`, ...) for tasks
-   - **Splitter agent** — extracts each task spec into structured JSONL
+Comment on the issue. The comment can be just `@plan-agent`, or include a directive to pin model and reasoning budget:
 
-4. **A deterministic bash step** creates the real task issues, substitutes the placeholders with real issue numbers across the YAML and progress sections, updates the original issue body, labels it `meta` + `draft`, and assigns you as the author of the planning request.
+```
+@plan-agent                       # defaults: opus + high thinking
+@plan-agent sonnet                # sonnet + high thinking
+@plan-agent opus max              # opus + ultrathink
+@plan-agent haiku off             # haiku, no extended thinking
+```
 
-5. **Review the plan.** Remove the `draft` label when you're happy (optional), then comment `@claude` on the issue to kickstart the orchestration loop (same as Option B from step 3).
+Directive tokens — **model:** `opus` | `sonnet` | `haiku`; **reasoning:** `off` | `low` | `medium` | `high` | `max`. Unknown tokens are ignored. Punctuation and case are forgiven (`@plan-agent sonnet, please` → sonnet + default reasoning).
+
+#### 3. The agent responds in one of three ways
+
+**(a) Questions** — if the agent is missing critical info, it posts a numbered list of clarifying questions and stops. No task issues are created; no labels are applied. Reply to the questions in new comments, then mention `@plan-agent` again (with or without a directive) to continue. The agent sees the full thread on the next run.
+
+**(b) First plan** — if enough context is present, the plan-agent drafts a full meta-issue plan (Purpose / YAML Plan / Progress / Notes) into the issue body, the splitter extracts task specs, and a deterministic bash step creates the task issues, labels the issue `meta`+`draft`, and assigns you as the planning author. The issue now looks like a manually-authored meta (Option B below).
+
+**(c) Revision** — if the issue is already `meta`+`draft` and you comment change requests ("split task 3 into frontend and backend", "drop task 5", "task 2 needs more detail on X"), then re-mention `@plan-agent`, the agent revises. Reconciliation is **deterministic**:
+
+- Existing task issue numbers that appear in the new plan YAML → `gh issue edit` (only if title or body actually changed)
+- Existing numbers dropped from the new plan → `gh issue close` with a "Superseded by revised plan" comment
+- Fresh `Tn` placeholders in the new plan → `gh issue create`
+
+The identity signal is the `ref` the plan-agent writes in each `### …` heading: a bare integer means "preserve issue #N", a `Tn` placeholder means "create new". You can see every identity choice in the plan body before approving.
+
+#### 4. Approve and kickstart
+
+When you're happy with the plan, comment `@claude` on the meta issue. The orchestrator starts, removes the `draft` label (which also blocks further `@plan-agent` revisions), and runs the implementation loop to completion.
+
+When the final `meta/<N> → main` PR merges, GitHub auto-closes every task issue and the meta issue via `Closes #N` lines in the PR body.
+
+<details>
+<summary>Example transcript</summary>
+
+```
+[human]   Opens issue: "Add rate limiting to the public API"
+[human]   Comments: @plan-agent sonnet medium
+
+[bot]     🤔 Plan agent has questions before writing the plan.
+          1. Which endpoints are "public" — anything under /v1/ or only unauthenticated ones?
+          2. Sliding window or fixed window?
+          3. Per-IP or per-API-key?
+          Reply and re-mention @plan-agent.
+
+[human]   Comments: 1. all of /v1/public/*  2. sliding window  3. per-IP for now
+[human]   Comments: @plan-agent
+
+[bot]     Updates issue body with Purpose / YAML Plan / Progress / Notes.
+          Creates task issues #42, #43, #44. Labels issue meta + draft.
+          Posts: "Plan ready. Created 3 task issues; assigned to you."
+
+[human]   Comments: "Task #43 and #44 are really the same work — merge them"
+[human]   Comments: @plan-agent
+
+[bot]     Revised plan now has `tasks: [42, T_NEW]` in YAML.
+          Closes #44 with "Superseded by revised plan on #N".
+          Edits #43's title/body to reflect the merged scope.
+          Creates new task for T_NEW.
+          Posts: "Plan revised. 1 created, 1 updated, 0 unchanged, 1 closed."
+
+[human]   Comments: @claude
+
+[meta]    Removes `draft` label. Dispatches wave 1. Loop runs to completion.
+[meta]    Opens final PR meta/N → main with body "Closes #42, Closes #43, Closes #T_NEW_RESOLVED, Closes #N"
+[human]   Merges final PR. All issues auto-close.
+```
+
+</details>
 
 ### Option B — Write the plan manually
 
@@ -283,16 +346,16 @@ gh workflow run claude-meta.yml -f meta_issue=17
 
 ## Workflow details
 
-### `claude-plan.yml` — Planner (two-agent)
+### `claude-plan.yml` — Planner (two-agent, iterative)
 
 | | |
 |---|---|
-| **Triggers** | `@plan-agent` comment on any issue that is NOT labeled `meta` and does NOT have a `priority:P*` label (PR comments ignored) |
-| **Implementation** | Two Claude agents + deterministic bash finalization |
-| **Agent 1 (Plan)** | Model configurable via directive (default `claude-opus-4-7`). Tools: `Read, Glob, Grep, Write`. Explores the repo and writes the meta-issue body to `/tmp/plan-body.md` |
-| **Agent 2 (Splitter)** | `claude-sonnet-4-6`. Tools: `Read, Write`. Extracts task specs into `/tmp/tasks.jsonl` |
-| **Finalization** | Bash creates task issues via `gh issue create`, substitutes placeholder IDs with real issue numbers, updates the meta issue body, adds `meta`+`draft` labels, assigns the commenter, replies on the issue |
-| **Extended thinking** | Controlled by directive (`off`/`low`/`medium`/`high`/`max`) → injects magic phrase (`think hard` / `think very hard` / `ultrathink`) into the prompt |
+| **Triggers** | `@plan-agent` comment on an issue that is NOT a task (no `priority:P*`) AND is either unplanned (no `meta`) OR still draft (`meta`+`draft`). PR comments ignored. |
+| **Modes** | **Questions Mode** — agent writes only `/tmp/questions.md` → workflow posts a comment and stops (no labels, no tasks). **Plan Mode** — agent writes `/tmp/plan-body.md` → splitter + reconciliation run. **Revision Mode** — subcase of Plan Mode triggered when the issue is `meta`+`draft`; the workflow builds `/tmp/conversation.md` (current plan + existing task bodies + recent comments) as extra context. |
+| **Agent 1 (Plan)** | Model configurable via directive (default `claude-opus-4-7`). Tools: `Read, Glob, Grep, Write`. Explores the repo; decides Questions vs Plan Mode; on Plan Mode writes the meta-issue body to `/tmp/plan-body.md` with `Tn` placeholders for new tasks and real integers for preserved tasks. |
+| **Agent 2 (Splitter)** | `claude-sonnet-4-6`. Tools: `Read, Write`. Mechanically extracts task specs into `/tmp/tasks.jsonl`. On revisions, reads `/tmp/existing-tasks.json` to accurately refresh preserved-task bodies. |
+| **Reconciliation (deterministic)** | Each splitter entry's `ref` drives a single `gh` call: integer → `gh issue edit` (only on content change); `Tn` → `gh issue create`; numbers in old plan but absent from new plan → `gh issue close` with a "Superseded" comment. |
+| **Extended thinking** | Controlled by directive (`off`/`low`/`medium`/`high`/`max`) → injects magic phrase (`think hard` / `think very hard` / `ultrathink`) into the prompt. |
 | **Timeout** | 30 minutes |
 | **Key permissions** | `contents: read`, `issues: write`, `id-token: write` |
 
@@ -414,6 +477,10 @@ Non-obvious choices documented for future maintainers:
 - **Why explicit git commands in the task worker prompt?** Earlier versions said "the workflow handles the PR" and the agent interpreted this as "I don't need to commit/push either." Being explicit eliminates the ambiguity.
 
 - **Why does the task worker poll for branch visibility?** GitHub has eventual consistency on git refs. When the meta script creates `meta/<N>` and immediately dispatches a task worker, the ref may not be visible to `actions/checkout`. Polling handles this.
+
+- **Why does plan-agent revision use bimodal refs (integer or `Tn`) instead of LLM-based task diffing?** Deterministic reconciliation. The plan-agent decides identity at authoring time by writing a real issue number (preserve) or a fresh placeholder (create) into each `### … —` heading. Bash then reconciles with pure set operations — no semantic matching, no "is this task the same as before" inference. The identity choice is visible in the plan body, so humans can audit it before approving with `@claude`.
+
+- **Why does the final PR body use `Closes #N` for every task?** GitHub auto-closes referenced issues only when a PR merges into the **default branch**. Task PRs target `meta/*`, not `main`, so `fixes #N` on them doesn't auto-close anything. The only merge-into-main event is the final meta PR, so it must carry closure directives for every task plus the meta issue itself.
 
 - **Why `gh api` instead of `git ls-remote` in post-steps?** Git credentials are revoked after the `claude-code-action` step completes, but `GITHUB_TOKEN` still works with the `gh` CLI.
 
