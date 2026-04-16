@@ -69,15 +69,15 @@ echo ""
 
 # --- Check 2: Labels ---
 echo "[2/5] Required labels"
-LABELS=("meta:6F42C1:Orchestration meta issue for implementation plans"
-        "smoke-test:FFA500:Smoke test marker"
-        "priority:P0:B60205:Critical path"
-        "priority:P1:D93F0B:High priority"
-        "priority:P2:FBCA04:Medium priority"
-        "priority:P3:0E8A16:Low priority")
+LABELS=("meta|6F42C1|Orchestration meta issue for implementation plans"
+        "smoke-test|FFA500|Smoke test marker"
+        "priority:P0|B60205|Critical path"
+        "priority:P1|D93F0B|High priority"
+        "priority:P2|FBCA04|Medium priority"
+        "priority:P3|0E8A16|Low priority")
 
 for entry in "${LABELS[@]}"; do
-  IFS=':' read -r name color desc <<< "$entry"
+  IFS='|' read -r name color desc <<< "$entry"
   if gh label list $REPO_ARG --json name --jq '.[].name' 2>/dev/null | grep -qx "$name"; then
     pass "Label '$name' exists"
   else
