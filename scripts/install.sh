@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Install / Update Script for claude-in-github
+# Install / Update Script for autoducks
 # =============================================================================
 #
 # USAGE
-#   curl -fsSL https://raw.githubusercontent.com/ggondim/claude-in-github/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/deepducks/autoducks/main/scripts/install.sh | bash
 #   curl -fsSL .../install.sh | bash -s -- --repo OWNER/REPO
 #   curl -fsSL .../install.sh | bash -s -- --no-setup
 #
@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-SOURCE_REPO="ggondim/claude-in-github"
+SOURCE_REPO="deepducks/autoducks"
 BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/${SOURCE_REPO}/${BRANCH}"
 
@@ -42,9 +42,9 @@ if [[ -f ".github/workflows/claude-feature.yml" ]]; then
 fi
 
 if [[ "$FRESH_INSTALL" == "true" ]]; then
-  echo "=== Installing claude-in-github ==="
+  echo "=== Installing autoducks ==="
 else
-  echo "=== Updating claude-in-github ==="
+  echo "=== Updating autoducks ==="
 fi
 echo ""
 

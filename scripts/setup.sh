@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Setup / Bootstrap Script for claude-in-github
+# Setup / Bootstrap Script for autoducks
 # =============================================================================
 #
 # PURPOSE

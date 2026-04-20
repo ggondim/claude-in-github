@@ -1,4 +1,4 @@
-# claude-in-github
+# autoducks
 
 > An opinionated GitHub Actions package built on top of [Anthropic's official Claude Code + GitHub Actions integration](https://code.claude.com/docs/en/github-actions).
 
@@ -32,10 +32,24 @@ flowchart LR
 
 ---
 
+## Why this exists
+
+Copilot Coding Agent and similar SaaS products charge per-seat to run agents against your repos. If you already pay for Claude Max (or Codex, or any other harness), you shouldn't have to pay again just to wire them into GitHub.
+
+This project is a **bridge**, not an agent:
+
+- **BYO harness, BYO subscription.** Plug in your `CLAUDE_CODE_OAUTH_TOKEN` (and whatever credentials a future harness needs). No per-seat licensing, no vendor bot in the middle.
+- **Harness-agnostic by design.** Claude today; the workflow contracts are generic enough that Codex and other harnesses drop in without rewriting the core.
+- **GitHub-native surface.** Triggers are the things GitHub already gives you — comments, mentions, assignments, labels, PR merges. No external dashboard, no webhook server, no sidecar service to host.
+- **Deterministic shell, LLM where it counts.** Orchestration, reconcile, revert, and close are 100% bash/Python. LLM calls happen only in `plan`, `work`, and `fix` — three of six workflows.
+- **Composable verbs.** Every `/agents <verb>` works in isolation. SDD-style `plan → waves → ship` is one useful combination, not a required ceremony.
+
+---
+
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ggondim/claude-in-github/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/deepducks/autoducks/main/scripts/install.sh | bash
 ```
 
 Only `.github/` is modified. On a fresh install, setup runs automatically. Run again at any time to update to the latest version.
