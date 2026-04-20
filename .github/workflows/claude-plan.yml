@@ -112,6 +112,12 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: .github/scripts/parse-directive.sh >> "$GITHUB_OUTPUT"
 
+      # --- React 👀 on the trigger comment (workflow started) ---
+      - name: React — started
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/react.sh "${{ github.event.comment.id }}" eyes
+
       # --- Extract context (issue number, commenter, revision detection) ---
       - name: Extract context
         id: feature
@@ -579,6 +585,13 @@ jobs:
           **Next step:** review the plan in the issue body above. When you're ready, comment \`/agents start\` on this issue to kickstart the orchestration loop. (Or mention \`/agents plan\` again with change requests to revise.)"
           fi
 
+      # --- React 👍 on the trigger comment (workflow finished successfully) ---
+      - name: React — success
+        if: success() && steps.mode.outputs.mode == 'plan'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/react.sh "${{ github.event.comment.id }}" +1
+
       # --- Failure notification (generic fallback — the fail_parse step posts its own detailed comment) ---
       - name: Notify failure
         if: failure() && steps.fail_parse.outcome != 'failure'
@@ -589,3 +602,10 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           gh issue comment "$ISSUE_NUM" --body "@$COMMENTER — ⚠️ **Plan agent failed.** [View logs](https://github.com/${{ github.repository }}/actions/runs/${RUN_ID})"
+
+      # --- React 😕 on the trigger comment (workflow failed, regardless of which failure step handled it) ---
+      - name: React — failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/react.sh "${{ github.event.comment.id }}" confused

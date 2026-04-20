@@ -100,6 +100,12 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: .github/scripts/parse-directive.sh >> "$GITHUB_OUTPUT"
 
+      # --- React 👀 on the trigger comment (no-op for workflow_dispatch) ---
+      - name: React — started
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/react.sh "${{ github.event.comment.id }}" eyes
+
       # --- Determine issue number, base branch, model (deterministic) ---
       # On workflow_dispatch, model/reasoning come from inputs (set by the
       # feature orchestrator). On issue_comment, they come from the parsed
@@ -281,6 +287,13 @@ jobs:
             echo "Triggered feature workflow for issue #$FEATURE_NUM"
           fi
 
+      # --- React 👍 on the trigger comment (success) ---
+      - name: React — success
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/react.sh "${{ github.event.comment.id }}" +1
+
       # --- Failure notification ---
       - name: Notify failure
         if: failure()
@@ -300,3 +313,10 @@ jobs:
           gh issue comment "$ISSUE_NUM" --body "⚠️ **Task worker failed.** [View logs](https://github.com/${{ github.repository }}/actions/runs/${RUN_ID})
 
           To retry with fix context, comment \`/agents fix\` on this issue."
+
+      # --- React 😕 on the trigger comment (failure) ---
+      - name: React — failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/react.sh "${{ github.event.comment.id }}" confused

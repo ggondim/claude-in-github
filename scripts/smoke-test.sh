@@ -223,7 +223,7 @@ echo "  Feature: #$FEATURE"
 
 # --- Kickstart ---
 echo "[4/5] Kickstarting the loop..."
-gh issue comment $FEATURE $REPO_ARG --body "/agents start Start the smoke test orchestration loop."
+gh issue comment $FEATURE $REPO_ARG --body "/agents start"
 echo "  Kickstart comment posted."
 
 if [[ "$WAIT" == false ]]; then

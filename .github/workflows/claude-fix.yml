@@ -73,6 +73,12 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: .github/scripts/parse-directive.sh >> "$GITHUB_OUTPUT"
 
+      # --- React 👀 on the trigger comment ---
+      - name: React — started
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/react.sh "${{ github.event.comment.id }}" eyes
+
       # --- Gather context from issue history (deterministic) ---
       - name: Extract context
         id: feature
@@ -274,4 +280,17 @@ jobs:
             if [ "$FEATURE_NUM" != "0" ]; then
               gh issue comment "$FEATURE_NUM" --body "❌ **Fix agent failed** on issue #${ISSUE_NUM}. [View run](https://github.com/${{ github.repository }}/actions/runs/${RUN_ID}) — Manual intervention needed."
             fi
+          fi
+
+      # --- React 👍 / 😕 on the trigger comment based on outcome ---
+      - name: React — outcome
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            .github/scripts/react.sh "${{ github.event.comment.id }}" +1
+          else
+            .github/scripts/react.sh "${{ github.event.comment.id }}" confused
           fi

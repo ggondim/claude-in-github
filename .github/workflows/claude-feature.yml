@@ -87,6 +87,13 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: .github/scripts/parse-directive.sh >> "$GITHUB_OUTPUT"
 
+      # --- React 👀 on the trigger comment (issue_comment only) ---
+      - name: React — started
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/react.sh "${{ github.event.comment.id }}" eyes
+
       - name: Run feature orchestrator script
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -99,3 +106,16 @@ jobs:
           WORKER_MODEL: ${{ steps.directive.outputs.model }}
           WORKER_REASONING: ${{ steps.directive.outputs.reasoning }}
         run: ./.github/scripts/feature-orchestrate.sh
+
+      # --- React 👍 / 😕 on the trigger comment based on outcome ---
+      - name: React — outcome
+        if: always() && github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            .github/scripts/react.sh "${{ github.event.comment.id }}" +1
+          else
+            .github/scripts/react.sh "${{ github.event.comment.id }}" confused
+          fi
