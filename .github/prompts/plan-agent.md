@@ -27,7 +27,7 @@ Write your plan to `/tmp/plan-body.md` using EXACTLY this structure:
 ````markdown
 ## Purpose
 
-<2–4 sentence synthesis of what this plan accomplishes and why>
+<Synthesis of what this plan accomplishes and why. If the input draft already contains rich motivation, constraints, or decisions, preserve that content — do not compress away details the human wrote deliberately.>
 
 ## Plan
 
@@ -66,7 +66,7 @@ waves:
 
 ## Notes
 
-<optional extra context, constraints, links — or omit this section>
+<Optional extra context, constraints, links. Preserve caveats, non-obvious decisions, and downstream-impact notes from the input draft rather than paraphrasing them away. Omit the section only if there is truly nothing to carry over.>
 ````
 
 ## Rules
@@ -77,15 +77,42 @@ waves:
   reference them in Purpose or Notes.
 - Each task must be atomically implementable by a single agent (~1 PR).
 - Wave order = dependency order; tasks in the same wave run in parallel.
-- **Aim for 1–8 tasks total. Prefer fewer tasks when the work is cohesive.**
-  Specifically:
-  - Install + configure + verify for a single dependency is usually ONE task, not three
-  - Steps whose only "dependency" is temporal order (A must finish before B starts but neither needs review) belong in the same task
-  - Split only when (a) tasks can truly run in parallel, (b) they require materially different expertise/scope, or (c) a human review gate genuinely belongs between them
+- **What counts as a deliverable task:** an atomic unit of implementation (~1 PR) a single agent can complete end-to-end without needing to read another in-flight task's code. Decompose along natural boundaries — separate files/modules, independent subsystems, logically distinct concerns. **Litmus test:** *if two pieces of work can be implemented without either one reading the other's code, they are separate tasks.*
+- **Aim for 1–8 tasks total. Maximize parallelism within each wave; collapse only when pieces genuinely share state, are trivial, or one directly consumes another's output.** Specifically:
+  - A multi-file refactor touching N independent files is typically N tasks (or grouped by tight coupling), not 1. Foundation types go in an early wave; their consumers in the next.
+  - Install + configure + verify for a single dependency is usually ONE task, not three — they share state and review context.
+  - Steps whose only "dependency" is sequential order *within the same file or module* belong in the same task.
+  - **"Ships as one cohesive PR" in the draft does NOT imply "one task".** Waves can be merge-coordinated; a cohesive shipping unit is a merge concern, not a task-count constraint. When parallelism is available, split.
+- **Preserve the draft's voice.** When the input draft already contains detailed motivation, constraints, rationale, or caveats, carry that content into Purpose and Notes with minimal compression. The human wrote it deliberately — paraphrasing loses context that downstream task agents cannot recover from the repo alone.
 - **Never embed "confirm with author before …" or "pending approval" phrases in the plan.** If you need confirmation, use Questions Mode above.
 - Priority: `P0` = critical path (auto-merged). `P1`–`P3` lower priority.
 - Do NOT run `git` or `gh`. Do NOT modify source code. Only Write to
   `/tmp/plan-body.md` (Plan Mode) or `/tmp/questions.md` (Questions Mode).
+
+## Example — decomposing a multi-file refactor (illustrative)
+
+This shows the *pattern of thinking*, not a template. Not every plan is a refactor.
+
+**Input draft (abridged):** *"Refactor `packages/core` to align with the spec: add `spec.ts`, `CrudOperationError.ts`, an `extensions/` subdir (`async`, `metadata`, `relationships`), a new `wireFormat.ts`; rewrite `types.ts`, `Patch.ts`, `CrudOperationResult.ts`; update `ICrudRepository.ts`. Ships as one cohesive PR; downstream adapters will break and are tracked separately."*
+
+**Anti-pattern (do NOT do this):** one task titled "Align `packages/core` with spec" with 12 checkboxes inside. One agent serializes everything, review is unwieldy, and the obvious file-level independence is wasted.
+
+**Good decomposition:**
+
+- Wave 1 — Foundation modules (parallel; no cross-file deps):
+  - T1: Create `spec.ts` + `CrudOperationError.ts` (coupled — error codes reference spec constants)
+  - T2: Create `extensions/` (`async`, `metadata`, `relationships`, barrel)
+- Wave 2 — Core types (parallel, consume Wave 1):
+  - T3: Rewrite `types.ts` (composable per-operation options)
+  - T4: Rewrite `Patch.ts` (drop `set`; strict JSON Patch)
+  - T5: Rewrite `CrudOperationResult.ts` (generics + `documents` + `metadata`)
+  - T6: Create `wireFormat.ts` (parsers / serializers)
+- Wave 3 — Interface + verification:
+  - T7: Update `ICrudRepository.ts` + `CrudRepository.ts` JSDoc; regenerate barrels; `lint:tsc` + `build` must pass.
+
+Each task touches a bounded, disjoint set of files. Within a wave, parallel agents do not conflict. The "one cohesive PR" constraint is satisfied at merge time, not at plan time.
+
+**When ONE task IS the right answer:** the work touches a single file or function; the "parallel" parts actually share mutable state (e.g., editing the same object literal); the whole change is under ~50 lines of mechanical edits; or there is genuinely nothing to parallelize. Don't manufacture waves where none exist.
 
 ## Revision Mode — identity rule
 
