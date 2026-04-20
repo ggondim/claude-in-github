@@ -88,6 +88,75 @@ pass() { echo "  ✅ $1"; }
 fail() { echo "  ❌ $1"; FAIL=$((FAIL + 1)); }
 warn() { echo "  ⚠️  $1"; WARN=$((WARN + 1)); }
 
+# Poll a comment's reactions for the terminal signal every workflow posts:
+#   +1       → success
+#   confused → failure
+# Scoped to the specific comment, so it's immune to GitHub's occasional
+# double-fire on issue_comment (the skipped duplicate never touches
+# reactions) and safe with parallel workflows on other issues (they
+# post on their own comments). Returns 0=success, 1=failure, 2=timeout.
+# NOTE: not usable for /agents revert or /agents close — those
+# workflows delete the triggering comment before completing. Use
+# wait_for_feature_unplanned / wait_for_feature_closed for those.
+wait_for_reaction() {
+  local comment_id="$1"
+  local timeout_s="$2"
+  local label="$3"
+  local interval=10
+  local waited=0
+  local reactions=""
+  while [[ $waited -lt $timeout_s ]]; do
+    reactions=$(gh api "repos/$REPO/issues/comments/$comment_id/reactions" \
+      --jq '[.[].content] | join(",")' 2>/dev/null || echo "")
+    case ",$reactions," in
+      *,+1,*)       return 0 ;;
+      *,confused,*) return 1 ;;
+    esac
+    sleep $interval
+    waited=$((waited + interval))
+    if [[ $((waited % 60)) -eq 0 ]]; then
+      echo "  ... $label ${waited}/${timeout_s}s (reactions: ${reactions:-none})"
+    fi
+  done
+  return 2
+}
+
+# Poll a feature issue until both terminal invariants of /agents revert
+# are satisfied: `feature`+`draft` labels stripped AND all comments
+# deleted. We check both because the workflow removes labels first and
+# deletes comments last, so waiting on labels alone returns too early
+# and races with the comment-count assertion downstream. Used instead
+# of reaction-polling because revert deletes its own trigger comment.
+# Issue-scoped — parallel reverts on other features don't cross-talk.
+# Returns 0=both invariants satisfied, 2=timeout.
+wait_for_feature_unplanned() {
+  local issue="$1"
+  local timeout_s="$2"
+  local interval=5
+  local waited=0
+  local labels=""
+  local comments="?"
+  while [[ $waited -lt $timeout_s ]]; do
+    labels=$(gh api "repos/$REPO/issues/$issue" \
+      --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "?")
+    comments=$(gh api "repos/$REPO/issues/$issue/comments" \
+      --jq '. | length' 2>/dev/null || echo "?")
+    local labels_clean=1
+    case ",$labels," in
+      *,feature,*|*,draft,*) labels_clean=0 ;;
+    esac
+    if [[ "$labels_clean" == "1" && "$comments" == "0" ]]; then
+      return 0
+    fi
+    sleep $interval
+    waited=$((waited + interval))
+    if [[ $((waited % 30)) -eq 0 ]]; then
+      echo "  ... revert ${waited}/${timeout_s}s (labels: ${labels:-none}, comments: $comments)"
+    fi
+  done
+  return 2
+}
+
 # --- Ensure labels exist (plan agent creates priority:P* lazily but we
 #     want them ready so we can assert quickly) ---
 echo "[1/7] Ensuring labels exist..."
@@ -178,54 +247,28 @@ if [[ "$WAIT" == false ]]; then
 fi
 echo ""
 
-# --- Wait for plan-agent run to complete ---
-echo "[4/7] Waiting for plan-agent run..."
-# Find the run triggered by this comment. Event name + timing + event actor
-# uniquely identify it.
-PLAN_WAITED=0
-PLAN_RUN_ID=""
-# Every /agents comment fires ALL 6 workflows on this repo; most skip
-# because their if: guard doesn't match. Filter out conclusion=skipped
-# so we grab the one that's actually running /agents plan.
-CUTOFF=$(date -u -v-2M '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d '-2 min' '+%Y-%m-%dT%H:%M:%SZ')
-while [[ $PLAN_WAITED -lt 60 ]]; do
-  PLAN_RUN_ID=$(gh run list --workflow="Claude Plan Agent" --limit 5 \
-    --json databaseId,createdAt,conclusion \
-    --jq "[.[] | select(.createdAt > \"$CUTOFF\" and .conclusion != \"skipped\")] | .[0].databaseId // empty" 2>/dev/null || echo "")
-  [[ -n "$PLAN_RUN_ID" ]] && break
-  sleep 5
-  PLAN_WAITED=$((PLAN_WAITED + 5))
-done
-
-if [[ -z "$PLAN_RUN_ID" ]]; then
-  fail "plan-agent run did not appear within 60s"
+# --- Wait for plan-agent terminal reaction ---
+# Each `/agents` comment triggers every workflow; five skip via `if:`
+# guards and one runs. GitHub occasionally emits more than one run for
+# the same comment event, and `conclusion != "skipped"` can't filter
+# them at pick-time because both are still `in_progress`. So we track
+# the *comment reactions* the workflow itself posts (👀 → 👍/😕)
+# instead of trying to pin a run ID. Reactions are tied to our specific
+# comment, so parallel workflows on other issues don't cross-talk.
+echo "[4/7] Waiting for plan-agent terminal reaction..."
+if [[ -z "${PLAN_COMMENT_ID:-}" ]]; then
+  fail "cannot track plan-agent — missing PLAN_COMMENT_ID"
   exit 1
 fi
-echo "  Plan run: $PLAN_RUN_ID"
-
-# Poll for completion (up to 10 min)
-PLAN_WAITED=0
-while [[ $PLAN_WAITED -lt 600 ]]; do
-  STATUS=$(gh run view $PLAN_RUN_ID --json status,conclusion --jq '.status + "|" + (.conclusion // "")' 2>/dev/null || echo "")
-  if [[ "$STATUS" == completed* ]]; then
-    CONCLUSION=$(echo "$STATUS" | cut -d'|' -f2)
-    if [[ "$CONCLUSION" == "success" ]]; then
-      pass "plan-agent run completed successfully (${PLAN_WAITED}s)"
-    else
-      fail "plan-agent run completed with conclusion=$CONCLUSION"
-      exit 1
-    fi
-    break
-  fi
-  sleep 15
-  PLAN_WAITED=$((PLAN_WAITED + 15))
-  echo "  ... $PLAN_WAITED/600s ($STATUS)"
-done
-
-if [[ $PLAN_WAITED -ge 600 ]]; then
-  fail "plan-agent run did not complete within 10 min"
-  exit 1
-fi
+# `|| RC=$?` neutralizes `set -e` so non-zero returns don't abort the
+# script before we can interpret them.
+PLAN_RC=0
+wait_for_reaction "$PLAN_COMMENT_ID" 600 "plan-agent" || PLAN_RC=$?
+case $PLAN_RC in
+  0) pass "plan-agent run completed successfully" ;;
+  1) fail "plan-agent run failed (😕 reaction on /agents plan comment)"; exit 1 ;;
+  2) fail "plan-agent run did not complete within 10 min"; exit 1 ;;
+esac
 echo ""
 
 # --- Assert: reactions, body change, labels, tasks created ---
@@ -338,34 +381,16 @@ REVERT_COMMENT_URL=$(gh issue comment $FEATURE $REPO_ARG --body "/agents revert"
 REVERT_COMMENT_ID=$(echo "$REVERT_COMMENT_URL" | grep -oE 'issuecomment-[0-9]+' | grep -oE '[0-9]+$' || echo "")
 echo "  Revert comment posted (id: ${REVERT_COMMENT_ID:-unknown})"
 
-# Wait for revert run
-sleep 5
-REVERT_CUTOFF=$(date -u -v-1M '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d '-1 min' '+%Y-%m-%dT%H:%M:%SZ')
-REVERT_RUN_ID=$(gh run list --workflow="Claude Agents — Revert" --limit 5 \
-  --json databaseId,createdAt,conclusion \
-  --jq "[.[] | select(.createdAt > \"$REVERT_CUTOFF\" and .conclusion != \"skipped\")] | .[0].databaseId // empty" 2>/dev/null || echo "")
-
-if [[ -z "$REVERT_RUN_ID" ]]; then
-  fail "revert run did not appear"
-  exit 1
-fi
-echo "  Revert run: $REVERT_RUN_ID"
-
-REVERT_WAITED=0
-while [[ $REVERT_WAITED -lt 120 ]]; do
-  STATUS=$(gh run view $REVERT_RUN_ID --json status,conclusion --jq '.status + "|" + (.conclusion // "")' 2>/dev/null || echo "")
-  if [[ "$STATUS" == completed* ]]; then
-    CONCLUSION=$(echo "$STATUS" | cut -d'|' -f2)
-    if [[ "$CONCLUSION" == "success" ]]; then
-      pass "revert run completed (${REVERT_WAITED}s)"
-    else
-      fail "revert run conclusion=$CONCLUSION"
-    fi
-    break
-  fi
-  sleep 10
-  REVERT_WAITED=$((REVERT_WAITED + 10))
-done
+# Revert deletes its own triggering comment, so reactions aren't a
+# viable signal. Watch the side effect instead: feature/draft labels
+# stripped from the feature issue. Issue-scoped, so parallel reverts
+# on other features don't cross-talk.
+REVERT_RC=0
+wait_for_feature_unplanned "$FEATURE" 120 || REVERT_RC=$?
+case $REVERT_RC in
+  0) pass "revert completed (labels stripped + comments deleted on #$FEATURE)" ;;
+  2) fail "revert did not reach terminal state within 2 min" ;;
+esac
 echo ""
 
 # --- Assert revert effects ---
