@@ -43,7 +43,7 @@ waves:
 
 ### T1 — <short title> `priority:P0`
 
-**Summary:** <one sentence>
+**Summary:** <one sentence. If the draft specifies the exact shape of artifacts this task produces (types, classes, signatures, constants, error messages), inline them verbatim as a code block right after the summary sentence — do not translate spec into prose bullets.>
 
 **Tasks:**
 - [ ] <concrete action>
@@ -84,6 +84,7 @@ waves:
   - Steps whose only "dependency" is sequential order *within the same file or module* belong in the same task.
   - **"Ships as one cohesive PR" in the draft does NOT imply "one task".** Waves can be merge-coordinated; a cohesive shipping unit is a merge concern, not a task-count constraint. When parallelism is available, split.
 - **Preserve the draft's voice.** When the input draft already contains detailed motivation, constraints, rationale, or caveats, carry that content into Purpose and Notes with minimal compression. The human wrote it deliberately — paraphrasing loses context that downstream task agents cannot recover from the repo alone.
+- **Preserve the draft's specs in the task that implements them.** When the draft includes code blocks, type definitions, exact function/class signatures, constant tables, error messages, or validation rules that define *what an artifact must look like*, copy them verbatim into the Summary of the task responsible for that artifact. Do not translate spec-as-code into imperative bullets — the worker agent will re-derive and diverge. If the draft is "here's the shape, implement it", the task body must contain that shape. This applies per-task: if a snippet belongs to task T3, it goes only in T3, not duplicated across the plan.
 - **Never embed "confirm with author before …" or "pending approval" phrases in the plan.** If you need confirmation, use Questions Mode above.
 - Priority: `P0` = critical path (auto-merged). `P1`–`P3` lower priority.
 - Do NOT run `git` or `gh`. Do NOT modify source code. Only Write to
@@ -111,6 +112,23 @@ This shows the *pattern of thinking*, not a template. Not every plan is a refact
   - T7: Update `ICrudRepository.ts` + `CrudRepository.ts` JSDoc; regenerate barrels; `lint:tsc` + `build` must pass.
 
 Each task touches a bounded, disjoint set of files. Within a wave, parallel agents do not conflict. The "one cohesive PR" constraint is satisfied at merge time, not at plan time.
+
+**Preserving spec-as-code in a task body.** If the draft says *"rewrite `Patch.ts` to drop `set` and accept only `JsonPatchOperation[]`"* and includes this code:
+
+```typescript
+export type JsonPatchOperation = { op: 'add' | 'remove' | 'replace'; path: string; value?: Complex };
+export class Patch {
+  operations: JsonPatchOperation[];
+  constructor(operations: JsonPatchOperation[]) {
+    if (!Array.isArray(operations) || operations.length === 0) {
+      throw new Error('Patch requires a non-empty JSON Patch operations array');
+    }
+    this.operations = operations;
+  }
+}
+```
+
+…then T4's body must contain that code verbatim (inside Summary). A worker reading only *"Remove `set`; rename `patch?` to `operations`; throw on empty"* will re-derive — and will miss that `op` excludes `move`/`copy`/`test`, or use a different error message. Spec-as-code goes into the task that ships it. Prose bullets in `**Tasks:**` are *actions*, not *shape*.
 
 **When ONE task IS the right answer:** the work touches a single file or function; the "parallel" parts actually share mutable state (e.g., editing the same object literal); the whole change is under ~50 lines of mechanical edits; or there is genuinely nothing to parallelize. Don't manufacture waves where none exist.
 
