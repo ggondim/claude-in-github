@@ -467,14 +467,32 @@ jobs:
                 echo "Unchanged #$REF"
               fi
             else
-              # New task placeholder
-              ARGS=(--repo "$REPO" --title "$TITLE" --body "$FULL_BODY")
-              [[ -n "$LABELS" ]] && ARGS+=(--label "$LABELS")
-              URL=$(gh issue create "${ARGS[@]}")
-              NUM=$(echo "$URL" | grep -oP '\d+$')
+              # New task placeholder — create via `gh api` so we can
+              # (a) request the native Task issue type and
+              # (b) capture the database id for the sub-issue link.
+              # Both type and parent are MAY features — we degrade gracefully
+              # if the org hasn't defined issue types or the sub-issues API
+              # is unavailable.
+              CREATE_PAYLOAD=$(jq -nc \
+                --arg title "$TITLE" \
+                --arg body "$FULL_BODY" \
+                --arg type "Task" \
+                --argjson labels "$(jq -cn --arg l "$LABELS" '$l | split(",") | map(select(. != ""))')" \
+                '{title: $title, body: $body, type: $type, labels: $labels}')
+              RESP=$(gh api "repos/$REPO/issues" --method POST --input - <<< "$CREATE_PAYLOAD")
+              NUM=$(echo "$RESP" | jq -r '.number')
+              TASK_ID=$(echo "$RESP" | jq -r '.id')
               echo "$REF=$NUM" >> /tmp/sub-map.txt
               CREATED=$((CREATED + 1))
-              echo "Created $REF → #$NUM ($TITLE)"
+              echo "Created $REF → #$NUM ($TITLE) [db_id=$TASK_ID]"
+
+              # Link as sub-issue of the feature (best-effort — API returns 4xx
+              # if already linked or if sub-issues aren't enabled for the repo).
+              if [[ -n "$TASK_ID" && "$TASK_ID" != "null" ]]; then
+                gh api "repos/$REPO/issues/$ISSUE_NUM/sub_issues" --method POST \
+                  -F "sub_issue_id=$TASK_ID" --silent 2>/dev/null \
+                  || echo "::notice::Could not link #$NUM as sub-issue of #$ISSUE_NUM (sub-issues API unavailable or already linked)"
+              fi
             fi
           done < /tmp/tasks.jsonl
 
@@ -542,13 +560,19 @@ jobs:
           # Update the issue body (always).
           gh issue edit "$ISSUE_NUM" --body-file /tmp/feature-body.md
 
-          # First-pass-only work: labels + assignee.
+          # First-pass-only work: labels + type + assignee.
           if [[ "$IS_REVISION" != "true" ]]; then
             gh label create draft --color "CCCCCC" \
               --description "Plan drafted but not yet kickstarted" 2>/dev/null || true
             gh issue edit "$ISSUE_NUM" --add-label feature --add-label draft
             gh issue edit "$ISSUE_NUM" --add-assignee "$COMMENTER" \
               || echo "::warning::Could not assign @$COMMENTER (missing repo access?)"
+
+            # Set native issue type = Feature (best-effort — MAY silently
+            # no-op on repos without the Feature type defined at the org).
+            gh api "repos/$REPO/issues/$ISSUE_NUM" --method PATCH \
+              -f "type=Feature" --silent 2>/dev/null \
+              || echo "::notice::Could not set issue type=Feature (types may not be configured at the org)"
           fi
 
           echo "created=$CREATED"     >> "$GITHUB_OUTPUT"

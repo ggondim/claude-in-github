@@ -18,6 +18,7 @@
 #   3. CLAUDE_CODE_OAUTH_TOKEN secret — reports if missing
 #   4. Repository Actions workflow permissions — reports if wrong
 #   5. Claude Code GitHub App installation — reports if missing
+#   6. Issue types (Feature, Task) at the org level — reports if missing
 # =============================================================================
 
 set -euo pipefail
@@ -58,7 +59,7 @@ echo "=== Setup check for $REPO ==="
 echo ""
 
 # --- Check 1: gh CLI auth ---
-echo "[1/5] GitHub CLI authentication"
+echo "[1/6] GitHub CLI authentication"
 if gh auth status &>/dev/null; then
   pass "gh CLI is authenticated"
 else
@@ -68,7 +69,7 @@ fi
 echo ""
 
 # --- Check 2: Labels ---
-echo "[2/5] Required labels"
+echo "[2/6] Required labels"
 LABELS=("feature|6F42C1|Orchestration feature issue for implementation plans"
         "smoke-test|FFA500|Smoke test marker"
         "priority:P0|B60205|Critical path"
@@ -91,7 +92,7 @@ done
 echo ""
 
 # --- Check 3: Secret ---
-echo "[3/5] Required secrets"
+echo "[3/6] Required secrets"
 if gh secret list $REPO_ARG --json name --jq '.[].name' 2>/dev/null | grep -qx "CLAUDE_CODE_OAUTH_TOKEN"; then
   pass "Secret CLAUDE_CODE_OAUTH_TOKEN is configured"
 else
@@ -103,7 +104,7 @@ fi
 echo ""
 
 # --- Check 4: Actions permissions ---
-echo "[4/5] Actions workflow permissions"
+echo "[4/6] Actions workflow permissions"
 PERMS=$(gh api "repos/$REPO/actions/permissions/workflow" --jq '.default_workflow_permissions + "|" + (.can_approve_pull_request_reviews | tostring)' 2>/dev/null || echo "")
 
 if [[ -z "$PERMS" ]]; then
@@ -119,13 +120,42 @@ fi
 echo ""
 
 # --- Check 5: Claude Code GitHub App ---
-echo "[5/5] Claude Code GitHub App"
+echo "[5/6] Claude Code GitHub App"
 # There is no public API to list installations on a repo without proper auth.
 # Best we can do is check if the workflows can authenticate — which only happens at runtime.
 manual "Verify the Claude Code GitHub App is installed on this repository
 
       Install at: https://github.com/apps/claude
       Make sure 'All repositories' or this specific repo is selected."
+echo ""
+
+# --- Check 6: Issue types (Feature, Task) ---
+# Issue types are an org-level feature. Workflows degrade gracefully if
+# types aren't configured — the type parameter is silently ignored by the
+# API. But without them, typed feature/task relationships don't render.
+echo "[6/6] Issue types (Feature, Task)"
+ORG=$(echo "$REPO" | cut -d/ -f1)
+TYPES_JSON=$(gh api "orgs/$ORG/issue-types" 2>/dev/null || echo "")
+if [[ -z "$TYPES_JSON" ]]; then
+  manual "Could not list issue types for org '$ORG' (not an org, or no admin access).
+      If '$ORG' is a user account, types are only available under organizations.
+      If it's an org and you're not an admin, ask an admin to define them.
+      Workflows will run fine without types — the feature/task distinction
+      will only come from labels, not the native issue-type UI."
+else
+  TYPES=$(echo "$TYPES_JSON" | jq -r '.[].name')
+  MISSING=()
+  echo "$TYPES" | grep -qx "Feature" || MISSING+=("Feature")
+  echo "$TYPES" | grep -qx "Task"    || MISSING+=("Task")
+  if [[ ${#MISSING[@]} -eq 0 ]]; then
+    pass "Issue types 'Feature' and 'Task' exist in org '$ORG'"
+  else
+    manual "Missing issue types in org '$ORG': ${MISSING[*]}
+
+      Create them at: https://github.com/organizations/$ORG/settings/issue-types
+      Workflows keep running without this — they just won't set the native type."
+  fi
+fi
 echo ""
 
 # --- Summary ---
