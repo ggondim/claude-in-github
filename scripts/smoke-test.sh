@@ -233,7 +233,7 @@ echo "  Feature: #$FEATURE"
 # --- Kickstart ---
 echo "[4/5] Kickstarting the loop..."
 KICKSTART_URL=$(gh issue comment $FEATURE $REPO_ARG --body "/agents start")
-KICKSTART_ID=$(echo "$KICKSTART_URL" | grep -oE 'issuecomment-\K[0-9]+' || echo "")
+KICKSTART_ID=$(echo "$KICKSTART_URL" | grep -oE 'issuecomment-[0-9]+' | grep -oE '[0-9]+$' || echo "")
 echo "  Kickstart comment posted (id: ${KICKSTART_ID:-unknown})."
 
 # --- Assert 👀 reaction appears on the kickstart comment ---
