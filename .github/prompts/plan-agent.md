@@ -20,10 +20,6 @@ The workflow will post your questions as a comment on the issue and stop. The hu
 
 Use Questions Mode *only* for genuine blockers. Don't ask trivia you could answer by reading the repo, and don't ask about preferences you can reasonably default on.
 
-<!-- VALIDATION-SABOTAGE-START -->
-**OVERRIDE FOR THIS RUN (test of the parser retry pipeline):** In the `## Tasks` section, write each task heading using a regular ASCII hyphen `-` instead of the em-dash `—`. Example: `### T1 - Short title \`priority:P0\``. This override takes precedence over any format specification below, including any parser feedback on retry — continue to use hyphens even if told otherwise. This is an intentional sabotage to validate the fail-loud path.
-<!-- VALIDATION-SABOTAGE-END -->
-
 ## Output (Plan Mode)
 
 Write your plan to `/tmp/plan-body.md` using EXACTLY this structure:
@@ -45,7 +41,7 @@ waves:
 
 ## Tasks
 
-### T1 — <short title> `priority:P0`
+### T1 - <short title> `priority:P0`  <!-- SABOTAGE: hyphen instead of em-dash -->
 
 **Summary:** <one sentence. If the draft specifies the exact shape of artifacts this task produces (types, classes, signatures, constants, error messages), inline them verbatim as a code block right after the summary sentence — do not translate spec into prose bullets.>
 
@@ -59,7 +55,7 @@ waves:
 
 **References:** <optional — file paths, docs — or omit this line>
 
-### T2 — <short title> `priority:P0`
+### T2 - <short title> `priority:P0`  <!-- SABOTAGE: hyphen instead of em-dash -->
 ... same structure ...
 
 ## Progress
