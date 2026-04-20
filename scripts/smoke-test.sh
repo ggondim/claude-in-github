@@ -40,12 +40,21 @@
 # This validates:
 # - Feature orchestrator kickstart via /agents start comment
 # - Task worker triggered by feature's assignment comment
-# - Branch creation under feature/<N>
+# - Branch creation under claude/<N>-issue-<T>-*
 # - Auto PR creation and merge
 # - Loop closure via workflow_dispatch
 # - Wave progression (wave 1 → wave 2)
 # - Parallel task execution
 # - Final PR creation (feature/<N> → main)
+# - Reaction 👀 on /agents start trigger comment (workflow started)
+# - Reaction 👍 after final PR opens (workflow succeeded)
+# - /agents close tears down branches, PRs, and tasks (when --cleanup)
+#
+# NOT COVERED (planned for a separate test harness):
+# - /agents plan end-to-end (this test skips planning, creates issues directly)
+# - Native issue types (Feature / Task) — set by the plan-agent reconcile step
+# - Sub-issue relationships — same reason
+# - /agents revert path
 # =============================================================================
 
 set -euo pipefail
@@ -223,8 +232,30 @@ echo "  Feature: #$FEATURE"
 
 # --- Kickstart ---
 echo "[4/5] Kickstarting the loop..."
-gh issue comment $FEATURE $REPO_ARG --body "/agents start"
-echo "  Kickstart comment posted."
+KICKSTART_URL=$(gh issue comment $FEATURE $REPO_ARG --body "/agents start")
+KICKSTART_ID=$(echo "$KICKSTART_URL" | grep -oE 'issuecomment-\K[0-9]+' || echo "")
+echo "  Kickstart comment posted (id: ${KICKSTART_ID:-unknown})."
+
+# --- Assert 👀 reaction appears on the kickstart comment ---
+# Feature orchestrator adds `eyes` as its first reaction step. If it doesn't
+# appear within 60s, the trigger guard likely didn't match — fail fast.
+if [[ -n "$KICKSTART_ID" ]]; then
+  echo "  Waiting for 👀 reaction on kickstart comment..."
+  REACTION_WAITED=0
+  while [[ $REACTION_WAITED -lt 60 ]]; do
+    EYES=$(gh api "repos/$(gh repo view ${REPO:-} --json nameWithOwner --jq '.nameWithOwner')/issues/comments/$KICKSTART_ID/reactions" \
+      --jq '[.[] | select(.content == "eyes")] | length' 2>/dev/null || echo "0")
+    if [[ "$EYES" -gt 0 ]]; then
+      echo "  ✅ 👀 reaction detected (${REACTION_WAITED}s)"
+      break
+    fi
+    sleep 5
+    REACTION_WAITED=$((REACTION_WAITED + 5))
+  done
+  if [[ "$EYES" -eq 0 ]]; then
+    echo "  ⚠️  No 👀 reaction after 60s — orchestrator may not have picked up the comment"
+  fi
+fi
 
 if [[ "$WAIT" == false ]]; then
   echo ""
@@ -265,15 +296,38 @@ while [[ $WAITED -lt $MAX_WAIT ]]; do
 
       if [[ "$CLEANUP" == true ]]; then
         echo ""
-        echo "Cleaning up..."
+        echo "Cleaning up via /agents close (also exercises the close workflow)..."
+
+        # First close the final feature PR if it's still open — /agents close
+        # will close it too, but doing it here avoids a GitHub-API race.
         gh pr close $PR_NUM $REPO_ARG --comment "Smoke test validated — closing." 2>/dev/null || true
-        for i in $TASK1 $TASK2 $TASK3 $FEATURE; do
-          gh issue close $i $REPO_ARG --comment "Smoke test cleanup" 2>/dev/null || true
+
+        # Trigger /agents close on the feature issue
+        gh issue comment $FEATURE $REPO_ARG --body "/agents close"
+        echo "  /agents close triggered. Waiting for teardown..."
+
+        # Poll for feature issue closed state (up to 60s)
+        CLOSE_WAITED=0
+        while [[ $CLOSE_WAITED -lt 60 ]]; do
+          STATE=$(gh issue view $FEATURE $REPO_ARG --json state --jq '.state' 2>/dev/null || echo "")
+          if [[ "$STATE" == "CLOSED" ]]; then
+            echo "  ✅ Feature issue closed (${CLOSE_WAITED}s)"
+            break
+          fi
+          sleep 5
+          CLOSE_WAITED=$((CLOSE_WAITED + 5))
         done
-        git push origin --delete "feature/$FEATURE" 2>/dev/null || true
-        for b in $(gh api repos/$(gh repo view --json nameWithOwner --jq '.nameWithOwner')/git/matching-refs/heads/claude/${FEATURE}- --jq '.[].ref | sub("refs/heads/"; "")' 2>/dev/null); do
-          git push origin --delete "$b" 2>/dev/null || true
-        done
+
+        if [[ "$STATE" != "CLOSED" ]]; then
+          echo "  ⚠️  /agents close didn't finish within 60s — falling back to manual cleanup"
+          for i in $TASK1 $TASK2 $TASK3 $FEATURE; do
+            gh issue close $i $REPO_ARG --comment "Smoke test cleanup" 2>/dev/null || true
+          done
+          git push origin --delete "feature/$FEATURE" 2>/dev/null || true
+          for b in $(gh api repos/$(gh repo view ${REPO:-} --json nameWithOwner --jq '.nameWithOwner')/git/matching-refs/heads/claude/${FEATURE}-issue- --jq '.[].ref | sub("refs/heads/"; "")' 2>/dev/null); do
+            git push origin --delete "$b" 2>/dev/null || true
+          done
+        fi
         echo "Cleanup complete."
       fi
 
