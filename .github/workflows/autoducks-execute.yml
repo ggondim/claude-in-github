@@ -39,6 +39,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.base_branch || 'main' }}
+          fetch-depth: 0
       - name: Load agent defaults
         id: agent
         run: |

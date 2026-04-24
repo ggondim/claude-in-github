@@ -26,8 +26,10 @@ fi
 SLUG=$(git::generate_slug "$ISSUE_NUM" "$(its::get_issue "$ISSUE_NUM" | jq -r '.title')")
 TASK_BRANCH="feature/${FEATURE_NUM:-0}-issue-${ISSUE_NUM}-$(date +%s)"
 
-# Configure git and create task branch
+# Configure git and create task branch from base
 git::configure_identity
+git fetch origin "$BASE_BRANCH" 2>/dev/null || true
+git checkout "$BASE_BRANCH" 2>/dev/null || true
 git checkout -b "$TASK_BRANCH"
 
 # Prepare task spec for the LLM

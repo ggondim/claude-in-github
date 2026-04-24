@@ -35,8 +35,24 @@ PR_TITLE="Task #$ISSUE_NUM: $ISSUE_TITLE"
 PR_NUM=$(git::create_pr "$TASK_BRANCH" "$BASE_BRANCH" "$PR_TITLE" "fixes #${ISSUE_NUM}")
 
 if [[ -n "${FEATURE_NUM:-}" && "$FEATURE_NUM" != "0" ]]; then
-  # Scenario B: task with feature parent — auto-merge
-  if ! git::merge_pr "$PR_NUM"; then
+  # Scenario B: task with feature parent — auto-merge with rebase retry
+  MERGE_OK=false
+  for attempt in 1 2 3; do
+    if git::merge_pr "$PR_NUM"; then
+      MERGE_OK=true
+      break
+    fi
+    echo "Merge attempt $attempt failed — rebasing onto $BASE_BRANCH..."
+    git fetch origin "$BASE_BRANCH"
+    if ! git rebase "origin/$BASE_BRANCH"; then
+      echo "Rebase conflict on attempt $attempt — aborting"
+      git rebase --abort 2>/dev/null || true
+      break
+    fi
+    git push --force-with-lease origin "$TASK_BRANCH"
+  done
+
+  if [[ "$MERGE_OK" != "true" ]]; then
     notify_failure "$ISSUE_NUM" "$RUN_ID" "$FEATURE_NUM"
     react_to_comment "${COMMENT_ID:-}" "confused"
     exit 1
