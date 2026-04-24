@@ -42,4 +42,5 @@ runs:
       with:
         prompt: ${{ steps.prompt.outputs.content }}
         anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        allowed_bots: '*'
         claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.max_turns }} --allowedTools '${{ inputs.allowed_tools }}'"
