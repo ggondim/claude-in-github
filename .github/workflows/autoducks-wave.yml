@@ -49,14 +49,8 @@ jobs:
         run: source .autoducks/core/config/parse-directive.sh >> "$GITHUB_OUTPUT"
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
-      - name: Debug env
-        run: |
-          echo "bash version: $BASH_VERSION"
-          echo "GITHUB_ACTIONS=$GITHUB_ACTIONS"
-          ls -la .autoducks/agents/waveOrchestrator/run.sh
-          head -5 .autoducks/agents/waveOrchestrator/run.sh
       - name: Run orchestrator
-        run: bash -x .autoducks/agents/waveOrchestrator/run.sh 2>&1
+        run: bash .autoducks/agents/waveOrchestrator/run.sh
         env:
           FEATURE_ISSUE: ${{ steps.feature.outputs.number }}
           REPO: ${{ github.repository }}
