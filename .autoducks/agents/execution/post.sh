@@ -7,6 +7,14 @@ source "$AUTODUCKS_ROOT/core/feedback/notify-failure.sh"
 source "$AUTODUCKS_ROOT/core/robustness/assert-changes.sh"
 source "$AUTODUCKS_ROOT/core/orchestration/trigger-loop-closure.sh"
 
+# Reconstruct state from git (pre.sh exports don't persist across GHA steps)
+TASK_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+BASE_BRANCH="${BASE_BRANCH:-$AUTODUCKS_BASE_BRANCH}"
+FEATURE_NUM=""
+if [[ "$BASE_BRANCH" =~ ^feature/([0-9]+) ]]; then
+  FEATURE_NUM="${BASH_REMATCH[1]}"
+fi
+
 # Check agent made changes
 if ! assert_changes; then
   notify_failure "$ISSUE_NUM" "$RUN_ID" "${FEATURE_NUM:+$FEATURE_NUM}"
@@ -15,7 +23,8 @@ if ! assert_changes; then
 fi
 
 # Commit and push
-git commit -m "Implement issue #${ISSUE_NUM}"
+git add -A
+git commit -m "Implement issue #${ISSUE_NUM}" || true
 git::push_branch "$TASK_BRANCH"
 
 # Get issue title for PR
