@@ -21,8 +21,13 @@ inputs:
     required: false
     default: '60'
   anthropic_api_key:
-    description: 'Anthropic API key'
-    required: true
+    description: 'Anthropic API key (used if claude_code_oauth_token not set)'
+    required: false
+    default: ''
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -42,5 +47,6 @@ runs:
       with:
         prompt: ${{ steps.prompt.outputs.content }}
         anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
         allowed_bots: '*'
         claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.max_turns }} --allowedTools '${{ inputs.allowed_tools }}'"
