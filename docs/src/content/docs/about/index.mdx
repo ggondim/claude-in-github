@@ -1,0 +1,60 @@
+---
+title: Design philosophy
+description: Why autoducks is built the way it is.
+---
+
+## Start simple, add layers
+
+autoducks is designed to be adopted incrementally. The execution agent works standalone — it doesn't need a tactical plan, a wave orchestrator, or a design spec. A team that writes detailed issue specs can run `/agents execute` and get code back without setting up anything else.
+
+The full pipeline (Design → Tactical → Wave → Execution) exists for teams working on larger features that benefit from structured decomposition and parallel execution. But it's a ceiling you grow into, not a floor you have to start from.
+
+This shapes everything: agents are loosely coupled, providers are swappable, and each layer only knows about its own inputs and outputs.
+
+## Key decisions
+
+### Issues as the coordination surface
+
+Issues in autoducks are not just tickets — they're the specification store, the state machine, and the progress tracker. The issue body holds the design spec, the task list, the wave structure, and real-time progress (checkboxes updated as tasks complete).
+
+No external state means no sync problems. An interrupted run can be resumed by re-triggering the orchestrator. The current state is always visible in the issue, readable by humans and agents alike.
+
+### Bash for orchestration, LLM for reasoning
+
+The wave orchestrator, revert agent, and close agent are 100% deterministic bash. They read ITS and Git state (merged PRs, issue labels, branch existence) and take deterministic actions.
+
+LLM agents are only invoked where reasoning is required: understanding a feature request, decomposing it into tasks, writing code, recovering from failure.
+
+This separation means:
+- Wave progression is fast (no API call latency)
+- Wave progression is cheap ($0 per cycle)
+- Orchestration logic is auditable and debuggable without needing to understand LLM behavior
+
+### Python parser for plan extraction
+
+The tactical agent outputs a plan in structured Markdown. A deterministic Python parser (`parse-plan.py`) extracts tasks — not an LLM. This replaced an earlier approach where a second LLM call split the plan.
+
+The parser runs in under 1 second vs. ~8 minutes for the LLM approach, and produces consistent output regardless of model variation.
+
+### Workflow dispatch for loop closure
+
+Many CI/CD platforms block workflows triggered by automation tokens from re-triggering other workflows (to prevent infinite loops). But the wave orchestrator needs to re-run after each task PR merges.
+
+The solution: execution agents fire a manual workflow dispatch call after completing. In the GitHub Actions runtime, this uses `workflow_dispatch`, which is exempt from that restriction. The PR merge event is a secondary trigger; the explicit dispatch is the reliable primary path.
+
+Other runtimes may implement this differently — the requirement is that the wave orchestrator re-runs after each task completion, regardless of how that is wired.
+
+### BYO harness, BYO subscription
+
+autoducks does not proxy LLM calls, charge per-seat, or require a vendor bot. Users supply their own API key and own the relationship with their LLM provider directly.
+
+This keeps autoducks as infrastructure, not a service.
+
+### Reactions over comments
+
+Agent status is communicated via emoji reactions on the trigger comment:
+- 👀 = started
+- 👍 = success
+- 😕 = failure
+
+This gives immediate at-a-glance status in the issue tracker UI without opening the issue. Comments are reserved for substantive output (task lists, PR links, error details).

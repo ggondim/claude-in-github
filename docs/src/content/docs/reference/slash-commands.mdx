@@ -1,0 +1,74 @@
+---
+title: Slash commands
+description: Complete reference for all /agents commands.
+---
+
+All autoducks commands are issued as issue comments using the `/agents` prefix.
+
+## Command overview
+
+| Command | Issue type | Label required | What it triggers |
+|---------|-----------|----------------|-----------------|
+| `/agents design` | Any | — | [Design agent](/agents/design) |
+| `/agents devise` | Any | — | [Tactical agent](/agents/tactical) |
+| `/agents execute` | Feature | `Ready` | [Wave Orchestrator](/agents/wave-orchestrator) |
+| `/agents execute` | Feature | — (no `Ready`) | Tactical agent (auto-escalation) |
+| `/agents execute` | Non-Feature | — | [Execution agent](/agents/execution) |
+| `/agents fix` | Any | — | [Fix agent](/agents/fix) |
+| `/agents revert` | Feature | — | [Revert agent](/agents/revert) |
+| `/agents close` | Feature | — | [Close agent](/agents/close) |
+
+## Directive arguments
+
+All commands accept optional inline arguments:
+
+```
+/agents <command> [--model <model>] [--reasoning <level>]
+```
+
+### `--model`
+
+Override the Claude model for this run. Accepts any valid Claude model ID.
+
+```
+/agents design --model claude-opus-4-7
+/agents execute --model claude-haiku-4-5-20251001
+```
+
+Default: value from `.autoducks/autoducks.json` → `defaults.model`
+
+### `--reasoning`
+
+Override the reasoning effort level.
+
+| Value | Description |
+|-------|-------------|
+| `low` | Faster, less thorough |
+| `medium` | Balanced |
+| `high` | Slower, more thorough (default) |
+
+```
+/agents devise --reasoning medium
+```
+
+## Pipeline shortcut
+
+If you comment `/agents execute` on a Feature issue that doesn't have the `Ready` label yet, autoducks will **auto-escalate** to the Tactical agent first, then proceed to execution. This lets you use a single command for the full pipeline without worrying about which step you're at.
+
+If the issue also lacks a design spec (just a raw idea), comment `/agents design` first to get a proper spec before planning.
+
+## Programmatic dispatch
+
+The Wave Orchestrator and Execution agents can also be triggered programmatically — bypassing the issue comment trigger entirely. How this is done depends on the runtime.
+
+**GitHub Actions runtime** (using the `gh` CLI):
+
+```bash
+# Trigger the wave orchestrator for a feature issue
+gh workflow run autoducks-wave.yml -f feature_issue=42
+
+# Trigger an execution agent directly
+gh workflow run autoducks-execute.yml -f issue_number=43 -f base_branch=feature/42-my-feature
+```
+
+Other runtimes expose this through their own workflow/pipeline trigger mechanism.

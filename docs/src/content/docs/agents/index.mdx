@@ -1,0 +1,84 @@
+---
+title: Agents overview
+description: All autoducks agents, their roles, and how they interact.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Mermaid from '../../../components/Mermaid.astro';
+
+autoducks agents are organized into **adoptable layers** — start with the Execution agent alone and add layers as your needs grow. You don't need to adopt everything at once.
+
+## Layers
+
+<Mermaid chart={`
+flowchart LR
+    E["Execution\n/agents execute"]
+    W["+ Wave Orchestrator\nparallel task dispatch"]
+    T["+ Tactical\ntask decomposition"]
+    D["+ Design\nspec generation"]
+
+    E --> W --> T --> D
+
+    class E executionBlue
+    class W waveGreen
+    class T tacticalPink
+    class D designPurple
+
+    classDef executionBlue fill:#cfe8ff,stroke:#0366d6,color:#0366d6
+    classDef waveGreen fill:#d4f8d4,stroke:#28a745,color:#28a745
+    classDef tacticalPink fill:#f8d4e4,stroke:#e55398,color:#e55398
+    classDef designPurple fill:#f0d4f8,stroke:#a836e5,color:#a836e5
+`} />
+
+Start at **Execution** and add layers progressively. Each layer is independent — you can use Tactical without Design, or run Execution directly without any orchestration.
+
+| Agent | Command | Type | What it does |
+|-------|---------|------|--------------|
+| [Design](/agents/design) | `/agents design` | LLM | Writes a technical spec from a feature request |
+| [Tactical](/agents/tactical) | `/agents devise` | LLM | Decomposes the spec into numbered task issues |
+| [Wave Orchestrator](/agents/wave-orchestrator) | `/agents execute` (on Feature) | Bash | Sequences and dispatches execution agents by wave |
+| [Execution](/agents/execution) | `/agents execute` (on task) | LLM | Implements a single task and opens a PR |
+
+## Utility commands
+
+| Command | Type | What it does |
+|---------|------|--------------|
+| [`/agents fix`](/agents/utilities#agents-fix) | LLM | Retries a failed task using failure context |
+| [`/agents revert`](/agents/utilities#agents-revert) | Bash | Undoes tactical planning, restores the original issue |
+| [`/agents close`](/agents/utilities#agents-close) | Bash | Full cleanup: closes issues, PRs, and branches |
+
+See the [Utility commands](/agents/utilities) page for full details.
+
+## LLM vs. bash
+
+A deliberate design choice: **only agents that need reasoning use LLM**. Orchestration, reconciliation, and cleanup are pure deterministic bash.
+
+| Needs LLM | Pure bash |
+|-----------|-----------|
+| Design, Tactical, Execution, Fix | Wave Orchestrator, Revert, Close |
+
+This makes wave progression fast, cheap (no API calls), and auditable. Bash agents can be read and understood without running them.
+
+## Provider abstraction
+
+All agents use three provider interfaces:
+
+| Interface | Prefix | Supported | Responsibility |
+|-----------|--------|-----------|----------------|
+| **ITS** | `its::` | `github` | Issues, PRs, labels, comments |
+| **Git** | `git::` | `github` | Branches, commits, merges |
+| **LLM** | `llm::` | `claude` | Agent reasoning, code writing |
+
+Switching providers requires implementing the same function signatures under a new provider directory — agent logic stays unchanged. For example, adding GitLab support means creating `providers/its/gitlab/` with the same function surface as `providers/its/github/`.
+
+## Reaction protocol
+
+All agents use emoji reactions to report status on the trigger comment:
+
+| Emoji | Meaning |
+|-------|---------|
+| 👀 | Agent started (pre-execution) |
+| 👍 | Agent completed successfully |
+| 😕 | Agent failed |
+
+This lets you see at a glance which command triggered which run and whether it succeeded — without reading log output.

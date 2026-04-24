@@ -1,0 +1,71 @@
+---
+title: Introduction
+description: What is autoducks and how it works.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+**autoducks** lets you run code agents on your CI/CD platform, triggered by issue comments, with any LLM provider. You can start with a single agent for task execution and add more layers as your needs grow — no need to adopt the full pipeline at once.
+
+## Start where you are
+
+The simplest entry point is the **Execution agent**: comment `/agents execute` on an issue, and an LLM agent reads the issue, writes the code, and opens a PR. That's it.
+
+From there, you can progressively add layers:
+
+| Layer | What it adds | Command |
+|-------|-------------|---------|
+| **Execution** | Implements a task from an issue, opens a PR | `/agents execute` |
+| **+ Tactical** | Breaks a feature spec into numbered task issues | `/agents devise` |
+| **+ Wave Orchestrator** | Runs tasks in parallel, respecting dependencies | automatic |
+| **+ Design** | Writes the spec from a rough idea | `/agents design` |
+
+Each layer is opt-in. A team that writes detailed issue specs can skip Design entirely. A team working on small tasks can skip Tactical and Waves. The agents compose — use as many or as few as you need.
+
+## How each layer works
+
+1. **Execution** — an LLM reads the issue spec, implements the code, and opens a PR. For tasks under a feature branch, the PR auto-merges. For standalone tasks, it waits for human review.
+2. **Tactical** — an LLM decomposes a feature spec into numbered task issues with acceptance criteria, a YAML wave structure, and a feature branch.
+3. **Wave Orchestrator** — pure bash reads the task list, groups tasks into dependency waves, and dispatches execution agents in parallel. No LLM, no API cost.
+4. **Design** — an LLM reads your feature request, explores the codebase, and writes a full technical specification back to the issue.
+
+Everything lives in your ITS and VCS: issues, branches, PRs, and labels. No external state, no vendor bot, no per-seat licensing.
+
+## Core principles
+
+**Composable layers.** Use one agent or all four. Start simple and add layers when the complexity warrants it.
+
+**Native triggers.** Triggers are issue comments, PR merges, and workflow dispatches. State lives in your issue tracker and repository.
+
+**BYO harness, BYO subscription.** You provide your own API key. autoducks does not proxy or meter LLM calls.
+
+**LLM for reasoning, bash for orchestration.** The wave orchestrator and utility agents are 100% deterministic bash — fast, free, and auditable.
+
+**Pluggable providers.** Three interfaces — ITS (issue tracking), Git, and LLM — keep agent logic decoupled from GitHub and Claude specifics.
+
+## Agents
+
+<CardGrid>
+  <Card title="Execution" icon="laptop">
+    The core agent. Reads an issue, writes code, opens a PR.
+    Triggered by `/agents execute`.
+  </Card>
+  <Card title="Tactical" icon="list-format">
+    Decomposes a feature spec into numbered task issues with acceptance criteria.
+    Triggered by `/agents devise`.
+  </Card>
+  <Card title="Wave Orchestrator" icon="rocket">
+    Pure bash. Groups tasks into waves and dispatches execution agents in parallel.
+    Triggered by `/agents execute` on a `Ready` feature.
+  </Card>
+  <Card title="Design" icon="pencil">
+    Writes a full technical spec from a rough feature request.
+    Triggered by `/agents design`.
+  </Card>
+</CardGrid>
+
+## What autoducks is not
+
+- **Not a CI/CD system.** It writes code and opens PRs — not tests, deploys, or environments.
+- **Not a code review tool.** Feature PRs require human review before merging to `main`.
+- **Not vendor-locked.** The LLM provider defaults to Claude, but the interface is swappable.

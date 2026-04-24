@@ -1,0 +1,140 @@
+---
+title: Utility commands
+description: Fix, revert, and close — lifecycle and recovery commands.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Mermaid from '../../../components/Mermaid.astro';
+
+Utility commands handle recovery, cleanup, and lifecycle operations. They work independently of the main pipeline.
+
+| Command | Type | What it does |
+|---------|------|--------------|
+| `/agents fix` | LLM | Retries a failed task using failure context from prior attempts |
+| `/agents revert` | Bash | Undoes tactical planning, restores the feature issue to its pre-plan state |
+| `/agents close` | Bash | Full cleanup: closes issues, PRs, and deletes branches |
+
+---
+
+## `/agents fix`
+
+<Mermaid chart={`
+flowchart LR
+    Triggers@{ shape: bolt, label: "Triggers" }
+    FixAgent["Fix agent"]
+
+    Triggers --triggers--> FixAgent
+
+    class Triggers triggersOrange
+    class FixAgent fixRed
+
+    classDef triggersOrange fill:#ffe8d4,stroke:#d66a28,color:#d66a28
+    classDef fixRed fill:#ffd4d4,stroke:#d62828,color:#d62828
+`} />
+
+The Fix agent recovers from failed execution attempts. It reads the task spec, inspects the failure context from recent comments, and resumes or replaces the prior implementation.
+
+**Script:** `.autoducks/agents/fix/pre.sh` + `post.sh`  
+**Trigger:** Issue comment `/agents fix` on any task issue
+
+### Behavior
+
+1. Reacts to the trigger comment with 👀.
+2. Searches for an existing partial branch from a prior failed attempt.
+   - **If found:** checks out that branch to continue where the previous attempt left off.
+   - **If not found:** creates a new fix branch `feature/{feature_num}-issue-{issue_num}-fix-{timestamp}`.
+3. Prepares the task spec and failure context from the last 10 comments.
+4. The LLM reads both, then fixes or completes the implementation.
+5. Commits and pushes. Reuses an existing PR if present; otherwise creates `Fix: {title}`.
+6. If feature-parented: auto-merges and triggers the wave orchestrator.
+7. Reacts with 👍 and confirms the fix.
+
+<Aside type="tip">
+Before running `/agents fix`, add a comment to the task issue explaining what went wrong. The agent reads the last 10 comments as context, so more detail leads to better results.
+</Aside>
+
+---
+
+## `/agents revert`
+
+<Mermaid chart={`
+flowchart LR
+    Triggers@{ shape: bolt, label: "Triggers" }
+    RevertAgent["Revert agent"]
+
+    Triggers --triggers--> RevertAgent
+
+    class Triggers triggersOrange
+    class RevertAgent revertYellow
+
+    classDef triggersOrange fill:#ffe8d4,stroke:#d66a28,color:#d66a28
+    classDef revertYellow fill:#fff3cd,stroke:#856d00,color:#856d00
+`} />
+
+Undoes the work of the Tactical agent: closes all task issues and restores the feature issue body to how it looked before `/agents devise` was run.
+
+**Script:** `.autoducks/agents/revert/run.sh`  
+**Type:** Bash — no LLM  
+**Trigger:** Issue comment `/agents revert` on a Feature issue
+
+### Behavior
+
+1. Reacts with 👀.
+2. Extracts task numbers from the YAML `waves:` block in the feature issue body.
+3. Closes all task issues with a comment referencing the revert.
+4. Removes `Ready` and `draft` labels from the feature issue.
+5. Restores the original issue body from edit history (last non-bot edit).
+6. Deletes all bot comments on the feature issue.
+7. Reacts with 👍.
+
+**Does not** delete branches or close PRs — use `/agents close` for that.
+
+Use this when the tactical plan needs to be completely redone. After reverting, run `/agents devise` again.
+
+---
+
+## `/agents close`
+
+<Mermaid chart={`
+flowchart LR
+    Triggers@{ shape: bolt, label: "Triggers" }
+    CloseAgent["Close agent"]
+
+    Triggers --triggers--> CloseAgent
+
+    class Triggers triggersOrange
+    class CloseAgent closeGray
+
+    classDef triggersOrange fill:#ffe8d4,stroke:#d66a28,color:#d66a28
+    classDef closeGray fill:#e8e8e8,stroke:#586069,color:#586069
+`} />
+
+Full teardown of a feature and all associated work.
+
+**Script:** `.autoducks/agents/close/run.sh`  
+**Type:** Bash — no LLM  
+**Trigger:** Issue comment `/agents close` on a Feature issue
+
+### Behavior
+
+1. Reacts with 👀.
+2. Extracts task numbers from the YAML `waves:` block.
+3. For each task: finds branches, closes open PRs, deletes branches, closes the task issue.
+4. Closes the feature PR (if open) and deletes the feature branch.
+5. Closes the feature issue with a cleanup summary.
+6. Reacts with 👍.
+
+### What gets removed
+
+| Object | Action |
+|--------|--------|
+| Task issues | Closed |
+| Task PRs | Closed |
+| Task branches | Deleted |
+| Feature branch | Deleted |
+| Feature PR | Closed |
+| Feature issue | Closed |
+
+<Aside type="caution">
+`/agents close` is destructive. Deleted branches cannot be easily recovered. Use `/agents revert` if you only want to undo the plan while keeping the feature issue open.
+</Aside>

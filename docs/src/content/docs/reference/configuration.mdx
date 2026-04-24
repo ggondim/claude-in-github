@@ -1,0 +1,109 @@
+---
+title: Configuration
+description: Reference for .autoducks/autoducks.json and all configuration options.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+autoducks is configured via `.autoducks/autoducks.json` at the root of your repository.
+
+## Full schema
+
+```json
+{
+  "providers": {
+    "its": "github",
+    "git": "github",
+    "llm": "claude"
+  },
+  "defaults": {
+    "model": "claude-sonnet-4-6",
+    "reasoning": "high",
+    "base_branch": "main"
+  }
+}
+```
+
+## `providers`
+
+Selects the implementation for each of the three provider interfaces.
+
+### `providers.its`
+
+Issue Tracking System provider. Controls all issue tracker interactions: issue creation/update, labels, comments, PR management, reactions.
+
+| Value | Status | Description |
+|-------|--------|-------------|
+| `github` | ✅ Supported | GitHub Issues via the `gh` CLI |
+
+### `providers.git`
+
+Git operations provider. Controls: branch creation/deletion, commits, pushes, PR merge.
+
+| Value | Status | Description |
+|-------|--------|-------------|
+| `github` | ✅ Supported | Git CLI with GitHub repository operations |
+
+### `providers.llm`
+
+LLM provider. Controls: design spec generation, tactical planning, code execution, fix attempts.
+
+| Value | Status | Description |
+|-------|--------|-------------|
+| `claude` | ✅ Supported | Anthropic Claude via the Claude Code action |
+
+## `defaults`
+
+Default runtime parameters used by all agents unless overridden by a [directive argument](/reference/slash-commands#directive-arguments).
+
+### `defaults.model`
+
+The Claude model ID to use for LLM agents.
+
+**Default:** `claude-sonnet-4-6`
+
+Recommended values:
+
+| Model | Use case |
+|-------|----------|
+| `claude-sonnet-4-6` | Default — good balance of speed and quality |
+| `claude-opus-4-7` | Best quality for complex design/tactical work |
+| `claude-haiku-4-5-20251001` | Fastest, lowest cost — good for simple execution tasks |
+
+### `defaults.reasoning`
+
+Reasoning effort level for LLM agents.
+
+| Value | Description |
+|-------|-------------|
+| `low` | Faster, less thorough |
+| `medium` | Balanced |
+| `high` | Slower, more thorough (default) |
+
+### `defaults.base_branch`
+
+The branch that feature branches and orphan task branches are created from, and the branch that the final feature PR targets.
+
+**Default:** `main`
+
+<Aside type="note">
+The `base_branch` default can be overridden at runtime via the `BASE_BRANCH` environment variable passed to workflow dispatch. The wave orchestrator always reads this from the feature branch name.
+</Aside>
+
+## Per-agent defaults
+
+Each agent can also have its own `defaults.json` in `.autoducks/agents/{agent}/defaults.json`:
+
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "reasoning": "high"
+}
+```
+
+Agent-level defaults override the global defaults. Directive arguments in slash commands override agent-level defaults.
+
+**Priority (highest to lowest):**
+1. Directive argument in comment (`--model`, `--reasoning`)
+2. Agent-level `defaults.json`
+3. Global `.autoducks/autoducks.json`
