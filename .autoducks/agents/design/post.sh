@@ -24,4 +24,8 @@ its::remove_label "$ISSUE_NUM" "Draft" 2>/dev/null || true
 react_to_comment "$COMMENT_ID" "+1"
 
 # Notify commenter
-its::comment_issue "$ISSUE_NUM" "✅ Design specification complete. Use \`/agents devise\` to create the tactical plan, or assign @tactical to this issue."
+its::comment_issue "$ISSUE_NUM" "✅ Design specification complete.
+
+_Ran with \`${MODEL:-unknown}\` at reasoning \`${REASONING:-unknown}\`._
+
+Use \`/agents devise\` to create the tactical plan, or assign @tactical to this issue."

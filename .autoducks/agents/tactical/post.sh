@@ -89,4 +89,6 @@ react_to_comment "$COMMENT_ID" "+1"
 # Notify
 its::comment_issue "$ISSUE_NUM" "✅ Tactical plan complete. Tasks created: $TASK_NUMBERS
 
+_Ran with \`${MODEL:-unknown}\` at reasoning \`${REASONING:-unknown}\`._
+
 Use \`/agents execute\` to start implementation, or assign the feature PR to the agents."

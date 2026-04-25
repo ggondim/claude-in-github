@@ -44,4 +44,6 @@ if [[ -n "${FEATURE_NUM:-}" && "$FEATURE_NUM" != "0" ]]; then
 fi
 
 react_to_comment "$COMMENT_ID" "+1"
-its::comment_issue "$ISSUE_NUM" "✅ Fix applied. PR #$PR_NUM."
+its::comment_issue "$ISSUE_NUM" "✅ Fix applied. PR #$PR_NUM.
+
+_Ran with \`${MODEL:-unknown}\` at reasoning \`${REASONING:-unknown}\`._"

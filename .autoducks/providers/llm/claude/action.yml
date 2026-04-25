@@ -12,10 +12,14 @@ inputs:
     description: 'Claude model to use'
     required: false
     default: 'claude-sonnet-4-6'
+  reasoning:
+    description: 'Reasoning level (off, low, medium, high, max)'
+    required: false
+    default: 'high'
   max_turns:
     description: 'Maximum number of agentic turns'
     required: false
-    default: '25'
+    default: '50'
   timeout_minutes:
     description: 'Timeout in minutes'
     required: false
@@ -35,8 +39,19 @@ runs:
     - name: Read prompt
       id: prompt
       shell: bash
+      env:
+        REASONING: ${{ inputs.reasoning }}
       run: |
+        case "$REASONING" in
+          off)    THINK_PHRASE="" ;;
+          low)    THINK_PHRASE="Think before writing." ;;
+          medium) THINK_PHRASE="Think hard before writing." ;;
+          high)   THINK_PHRASE="Think very hard before writing." ;;
+          max)    THINK_PHRASE="Ultrathink — take extensive time to reason before writing." ;;
+          *)      THINK_PHRASE="Think very hard before writing." ;;
+        esac
         PROMPT=$(cat "${{ inputs.prompt_file }}")
+        PROMPT="${PROMPT//\{\{THINK_PHRASE\}\}/$THINK_PHRASE}"
         {
           echo "content<<PROMPT_EOF"
           echo "$PROMPT"

@@ -66,4 +66,6 @@ fi
 
 react_to_comment "${COMMENT_ID:-}" "+1"
 
-its::comment_issue "$ISSUE_NUM" "✅ Implementation complete. PR #$PR_NUM created."
+its::comment_issue "$ISSUE_NUM" "✅ Implementation complete. PR #$PR_NUM created.
+
+_Ran with \`${MODEL:-unknown}\` at reasoning \`${REASONING:-unknown}\`._"
